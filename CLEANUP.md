@@ -10,10 +10,18 @@
 
 | | |
 |---|---|
-| 在哪 | profile `desktop` 的 bundle 清单 + `C:\Users\15132\.dsh\profiles\desktop\node_modules\dsh-rooms-probe`（本地目录安装是**链接**，不是拷贝） |
-| 怎么清 | `plugin_manager` → `action: "remove_bundle"`, `target: "dsh-rooms-probe"` |
-| 怎么验证 | `plugin_manager` → `action: "list_bundles"` 里没有它；`node_modules` 下没有 `dsh-rooms-probe` 或其链接 |
-| 备注 | 源码在 `.probe\probe\`，被 `.gitignore` 排除；删目录前先卸 bundle |
+| 在哪 | profile `desktop` 的 bundle 清单 + `node_modules\dsh-rooms-probe`（本地目录安装是**链接**，不是拷贝） |
+| 怎么清 | `plugin_manager` → `action: "remove_bundle"`, `target: "dsh-rooms-probe"`，**然后手动删 node_modules 里的 junction** |
+| 怎么验证 | `list_bundles` 里没有它；`package.json` 里没有它；`node_modules\dsh-rooms-probe` 不存在 |
+| 状态 | **已于 2026-11-10 21:59 清理完毕** |
+
+> ⚠️ 踩过的坑：`remove_bundle` 只移掉 `package.json` 的依赖行，**`node_modules` 里的 junction 会留下**（指向已删除的源码目录）。
+> 不删它就会变成一个悬空链接，`Test-Path` 为真但打不开。删法：
+> ```powershell
+> $link = "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\<包名>"
+> (Get-Item $link).Delete()   # 对 Junction 用 Delete，不要 -Recurse
+> ```
+> 这个坑对**正式插件卸载**同样适用，记在这里。
 
 ---
 
@@ -31,10 +39,10 @@
 
 | session id | 用途 | 状态 |
 |---|---|---|
-| `session-eab0b3d9-5570-4977-aa78-c3b798f16825` | 唤醒/排队/rpcId 实验 | **还活着**，探针还在用它。收尾时归档 |
+| `session-eab0b3d9-5570-4977-aa78-c3b798f16825` | 唤醒/排队/rpcId/端到端实验 | **待归档**（侧栏里标题是「只回两个字ok」，别被名字骗了） |
 
 > 归档方式：侧栏右键归档，或在会话里 `/archive`（如果有这个命令），或等 MVP 的清理脚本。
-> 注意它跑过 4 次模型回合，标题可能被自动改了，别被名字骗了。
+> 注意它跑过 5 次模型回合，标题被自动改了。
 
 ---
 
