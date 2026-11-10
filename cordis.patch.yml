@@ -1,0 +1,4 @@
+- insert:
+    - id: rooms
+      name: 'dsh-rooms'
+      config: {}

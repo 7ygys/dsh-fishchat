@@ -1,0 +1,543 @@
+// dsh-rooms — browser half.
+//
+// One sidebar row ("群") that selects one main panel: a WeChat-style group chat.
+// The host half owns the data; this file only draws it and posts to /rooms/r1.
+
+window.__ModuleLoader__.load({
+  id: 'dsh-rooms',
+  factory(require) {
+    const React = require('react')
+    const h = React.createElement
+    const { useState, useEffect, useRef, useCallback } = React
+
+    const ROOM = '/rooms/r1'
+    const POLL_MS = 1500
+    const FORCE_TIME_EVERY = 30
+    const PAGE = 50
+
+    // ------------------------------------------------------------ utilities
+
+    const PALETTE = ['#5b8def', '#e08a3c', '#4fa36b', '#b7628a', '#7a6fd1', '#c05a5a', '#3f9aa8', '#8a8f4f']
+
+    function hashName(name) {
+      let hash = 0
+      const text = String(name ?? '')
+      for (let index = 0; index < text.length; index += 1) {
+        hash = (hash * 31 + text.charCodeAt(index)) >>> 0
+      }
+      return hash
+    }
+
+    function avatarColor(name) {
+      return PALETTE[hashName(name) % PALETTE.length]
+    }
+
+    function pad(value) {
+      return String(value).padStart(2, '0')
+    }
+
+    function timeLabel(at) {
+      const date = new Date(at)
+      const now = new Date()
+      const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`
+      if (date.toDateString() === now.toDateString()) return clock
+      const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+      if (date.toDateString() === yesterday.toDateString()) return `昨天 ${clock}`
+      const days = (now.getTime() - date.getTime()) / 86400000
+      if (days < 7) return `星期${'日一二三四五六'[date.getDay()]} ${clock}`
+      if (date.getFullYear() === now.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+      return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+    }
+
+    function showTime(index, message, previous) {
+      if (previous === undefined) return true
+      if (index % FORCE_TIME_EVERY === 0) return true
+      return message.at - previous.at > 5 * 60 * 1000
+    }
+
+    async function getJson(url) {
+      const response = await fetch(url, { headers: { accept: 'application/json' } })
+      if (!response.ok) throw new Error(`${url} -> ${response.status}`)
+      return response.json()
+    }
+
+    async function postJson(url, body) {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+      })
+      if (!response.ok) throw new Error(`${url} -> ${response.status}`)
+      return response.json()
+    }
+
+    // ----------------------------------------------------------------- views
+
+    function GroupIcon({ size = 20, active = false }) {
+      const edge = Math.max(14, Math.round(size))
+      return h('svg', {
+        viewBox: '0 0 24 24',
+        width: edge,
+        height: edge,
+        'aria-hidden': true,
+        style: { display: 'block', opacity: active ? 1 : 0.9 },
+      },
+        h('rect', { x: 1.5, y: 3, width: 15, height: 11, rx: 3.5, fill: active ? 'currentColor' : 'none', stroke: 'currentColor', strokeWidth: active ? 0 : 1.6 }),
+        h('rect', { x: 7.5, y: 9.5, width: 15, height: 11, rx: 3.5, fill: active ? '#ffffff' : 'none', stroke: 'currentColor', strokeWidth: active ? 0 : 1.6 }),
+        h('circle', { cx: 5.5, cy: 8.5, r: 1.1, fill: active ? '#ffffff' : 'currentColor' }),
+        h('circle', { cx: 9.5, cy: 8.5, r: 1.1, fill: active ? '#ffffff' : 'currentColor' }),
+        h('circle', { cx: 12.5, cy: 15, r: 1.2, fill: active ? 'currentColor' : 'currentColor' }),
+        h('circle', { cx: 16.5, cy: 15, r: 1.2, fill: active ? 'currentColor' : 'currentColor' })
+      )
+    }
+
+    function Avatar({ name, size = 34 }) {
+      const initial = String(name ?? '?').trim().slice(0, 1) || '?'
+      return h('div', {
+        style: {
+          width: size,
+          height: size,
+          flex: `0 0 ${size}px`,
+          borderRadius: 6,
+          background: avatarColor(name),
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: Math.round(size * 0.46),
+          fontWeight: 600,
+          userSelect: 'none',
+        },
+      }, initial)
+    }
+
+    function TimeDivider({ at }) {
+      return h('div', {
+        style: { textAlign: 'center', color: '#9a9a9a', fontSize: 12, margin: '10px 0' },
+      }, timeLabel(at))
+    }
+
+    function Bubble({ message, mine }) {
+      return h('div', {
+        style: {
+          display: 'flex',
+          flexDirection: mine ? 'row-reverse' : 'row',
+          alignItems: 'flex-start',
+          gap: 8,
+          margin: '6px 0',
+        },
+      },
+      h(Avatar, { name: message.from }),
+      h('div', { style: { maxWidth: '68%', minWidth: 40 } },
+        h('div', {
+          style: { fontSize: 11, color: '#8a8a8a', margin: '0 4px 3px', textAlign: mine ? 'right' : 'left' },
+        }, message.from),
+        h('div', {
+          style: {
+            background: mine ? '#95ec69' : '#ffffff',
+            color: '#1a1a1a',
+            padding: '8px 11px',
+            borderRadius: 6,
+            fontSize: 14,
+            lineHeight: 1.55,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            boxShadow: '0 1px 1px rgba(0,0,0,.05)',
+          },
+        }, message.text)
+      )
+      )
+    }
+
+    function SystemRow({ message }) {
+      return h('div', {
+        style: { textAlign: 'center', color: '#9a9a9a', fontSize: 12, margin: '10px 0', padding: '0 24px' },
+      }, message.text)
+    }
+
+    function StatusText({ status }) {
+      if (status === null) return null
+      const agents = (status.members ?? []).filter((member) => member.kind === 'agent')
+      if (agents.length === 0) return '还没有成员，点右边「成员」加人'
+      const busy = agents.filter((agent) => agent.running)
+      const queued = agents.reduce((total, agent) => total + (agent.queued ?? 0), 0)
+      const dead = agents.filter((agent) => agent.live === false)
+      if (busy.length > 0) {
+        return `● ${busy.map((agent) => agent.name).join('、')} 在想…${queued > 0 ? ` · 排队 ${queued}` : ''}`
+      }
+      if (dead.length > 0) return `${dead.map((agent) => agent.name).join('、')} 不在线`
+      return `${agents.map((agent) => agent.name).join('、')} 在这里`
+    }
+
+    function MemberPicker({ status, onClose, onSaved }) {
+      const [items, setItems] = useState([])
+      const [error, setError] = useState(null)
+      const [selected, setSelected] = useState({}) // sessionId -> name
+      const [busy, setBusy] = useState(false)
+
+      useEffect(() => {
+        let alive = true
+        getJson(`${ROOM}/candidates`)
+          .then((data) => {
+            if (!alive) return
+            setItems(data.items ?? [])
+            const preload = {}
+            for (const member of (status?.members ?? [])) {
+              if (member.kind === 'agent') preload[member.sessionId] = member.name
+            }
+            setSelected(preload)
+          })
+          .catch((error) => { if (alive) setError(String(error.message ?? error)) })
+        return () => { alive = false }
+      }, [])
+
+      const toggle = (item) => {
+        setSelected((current) => {
+          const next = { ...current }
+          if (next[item.sessionId] !== undefined) {
+            delete next[item.sessionId]
+            return next
+          }
+          if (Object.keys(next).length >= 2) return next
+          next[item.sessionId] = (item.title ?? item.cwd ?? '成员').slice(0, 12)
+          return next
+        })
+      }
+
+      const rename = (sessionId, value) => {
+        setSelected((current) => ({ ...current, [sessionId]: value }))
+      }
+
+      const save = async () => {
+        setBusy(true)
+        try {
+          const members = Object.entries(selected).map(([sessionId, name]) => ({ sessionId, name: name.trim() || '成员' }))
+          await postJson(`${ROOM}/members`, { members })
+          onSaved()
+        } catch (error) {
+          setError(String(error.message ?? error))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      return h('div', {
+        style: {
+          position: 'absolute', inset: 0, background: 'rgba(0,0,0,.35)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20,
+        },
+        onClick: onClose,
+      },
+      h('div', {
+        onClick: (event) => event.stopPropagation(),
+        style: {
+          width: 520, maxWidth: '86%', maxHeight: '76%', background: '#fff', borderRadius: 10,
+          display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 40px rgba(0,0,0,.28)',
+        },
+      },
+      h('div', {
+        style: { padding: '12px 16px', fontWeight: 600, borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between' },
+      },
+      h('span', null, '选成员（最多两条鱼）'),
+      h('span', { style: { color: '#999', fontWeight: 400, fontSize: 12 } }, `已选 ${Object.keys(selected).length}/2`)
+      ),
+      h('div', { style: { overflowY: 'auto', flex: 1 } },
+        error !== null && h('div', { style: { padding: 12, color: '#c0392b' } }, error),
+        items.length === 0 && h('div', { style: { padding: 16, color: '#999' } }, '没有可选会话'),
+        items.map((item) => {
+          const active = selected[item.sessionId] !== undefined
+          const disabled = item.member && !active
+          return h('div', {
+            key: item.sessionId,
+            onClick: () => { if (!disabled) toggle(item) },
+            style: {
+              padding: '9px 16px', borderBottom: '1px solid #f3f3f3', cursor: disabled ? 'default' : 'pointer',
+              background: active ? '#eef7ff' : 'transparent', opacity: disabled ? 0.45 : 1,
+            },
+          },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+            h('span', { style: { width: 16, color: '#2b7fd4' } }, active ? '☑' : '☐'),
+            h('div', { style: { flex: 1, minWidth: 0 } },
+              h('div', { style: { fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
+                item.title ?? '（无标题）'),
+              h('div', { style: { fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
+                `${item.cwd ?? ''} · ${timeLabel(item.updatedAt ?? Date.now())}${item.running ? ' · 正在跑' : ''}`)
+            )
+          ),
+          active && h('input', {
+            value: selected[item.sessionId],
+            onClick: (event) => event.stopPropagation(),
+            onChange: (event) => rename(item.sessionId, event.target.value),
+            placeholder: '群里怎么称呼它',
+            style: {
+              marginTop: 6, marginLeft: 24, width: '70%', padding: '4px 8px', fontSize: 12,
+              border: '1px solid #ddd', borderRadius: 4,
+            },
+          })
+          )
+        })
+      ),
+      h('div', { style: { padding: '10px 16px', borderTop: '1px solid #eee', display: 'flex', justifyContent: 'flex-end', gap: 8 } },
+        h('button', { onClick: onClose, style: { padding: '6px 14px', borderRadius: 4, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' } }, '取消'),
+        h('button', {
+          onClick: save,
+          disabled: busy,
+          style: { padding: '6px 16px', borderRadius: 4, border: 'none', background: '#2b7fd4', color: '#fff', cursor: 'pointer', opacity: busy ? 0.6 : 1 },
+        }, busy ? '保存中…' : '保存')
+      )
+      )
+      )
+    }
+
+    function GroupPanel() {
+      const [messages, setMessages] = useState([])
+      const [meta, setMeta] = useState({ seq: 0, earliestSeq: 1, hasMore: false, truncatedBefore: null })
+      const [status, setStatus] = useState(null)
+      const [draft, setDraft] = useState('')
+      const [error, setError] = useState(null)
+      const [picker, setPicker] = useState(false)
+      const [ack, setAck] = useState(null)
+      const listRef = useRef(null)
+      const lastSeqRef = useRef(0)
+      const stickRef = useRef(true)
+      const scrollHeightRef = useRef(0)
+
+      const refreshStatus = useCallback(async () => {
+        try {
+          const data = await getJson(`${ROOM}/status`)
+          setStatus(data)
+          const latest = (data.members ?? []).find((member) => member.kind === 'agent')
+          if (data.lastAck !== null && data.lastAck !== undefined) setAck(data.lastAck)
+          return latest
+        } catch (error) {
+          setError(String(error.message ?? error))
+          return null
+        }
+      }, [])
+
+      const loadInitial = useCallback(async () => {
+        try {
+          const data = await getJson(`${ROOM}/messages`)
+          setMessages(data.messages ?? [])
+          lastSeqRef.current = data.seq ?? 0
+          setMeta({ seq: data.seq, earliestSeq: data.earliestSeq, hasMore: data.hasMore, truncatedBefore: data.truncatedBefore })
+          await postJson(`${ROOM}/read`, {})
+        } catch (error) {
+          setError(String(error.message ?? error))
+        }
+      }, [])
+
+      useEffect(() => { void loadInitial(); void refreshStatus() }, [loadInitial, refreshStatus])
+
+      // Poll the delta while the panel is visible; stop when it is not.
+      useEffect(() => {
+        let alive = true
+        const tick = async () => {
+          if (document.visibilityState !== 'visible') return
+          try {
+            const data = await getJson(`${ROOM}/messages?since=${lastSeqRef.current}&limit=200`)
+            if (!alive) return
+            if (Array.isArray(data.messages) && data.messages.length > 0) {
+              lastSeqRef.current = Math.max(lastSeqRef.current, data.seq ?? 0)
+              setMessages((current) => [...current, ...data.messages])
+              void postJson(`${ROOM}/read`, {})
+            }
+            setMeta((current) => ({
+              seq: data.seq ?? current.seq,
+              earliestSeq: data.earliestSeq ?? current.earliestSeq,
+              hasMore: current.hasMore,
+              truncatedBefore: data.truncatedBefore ?? current.truncatedBefore,
+            }))
+            void refreshStatus()
+          } catch {
+            /* transient: the host may be reloading */
+          }
+        }
+        const handle = setInterval(tick, POLL_MS)
+        return () => { alive = false; clearInterval(handle) }
+      }, [refreshStatus])
+
+      // Keep the view pinned to the newest message unless the user scrolled up.
+      useEffect(() => {
+        const node = listRef.current
+        if (node === null) return
+        if (stickRef.current) node.scrollTop = node.scrollHeight
+        scrollHeightRef.current = node.scrollHeight
+      }, [messages])
+
+      const onScroll = () => {
+        const node = listRef.current
+        if (node === null) return
+        stickRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 60
+      }
+
+      const loadOlder = async () => {
+        const first = messages[0]
+        if (first === undefined) return
+        try {
+          const data = await getJson(`${ROOM}/messages?before=${first.seq}&limit=${PAGE}`)
+          const node = listRef.current
+          const before = node === null ? 0 : node.scrollHeight
+          setMessages((current) => [...(data.messages ?? []), ...current])
+          setMeta((current) => ({ ...current, hasMore: data.hasMore, truncatedBefore: data.truncatedBefore ?? current.truncatedBefore }))
+          stickRef.current = false
+          requestAnimationFrame(() => {
+            if (node !== null) node.scrollTop = node.scrollHeight - before
+          })
+        } catch (error) {
+          setError(String(error.message ?? error))
+        }
+      }
+
+      const send = async () => {
+        const text = draft.trim()
+        if (text === '') return
+        setDraft('')
+        stickRef.current = true
+        try {
+          await postJson(`${ROOM}/say`, { text })
+          const data = await getJson(`${ROOM}/messages?since=${lastSeqRef.current}&limit=200`)
+          if (Array.isArray(data.messages) && data.messages.length > 0) {
+            lastSeqRef.current = Math.max(lastSeqRef.current, data.seq ?? 0)
+            setMessages((current) => [...current, ...data.messages])
+          }
+          void refreshStatus()
+        } catch (error) {
+          setError(String(error.message ?? error))
+          setDraft(text)
+        }
+      }
+
+      const toggleWake = async () => {
+        try {
+          const next = !(status?.room?.wakeEnabled !== false)
+          await postJson(`${ROOM}/wake`, { enabled: next })
+          void refreshStatus()
+        } catch (error) {
+          setError(String(error.message ?? error))
+        }
+      }
+
+      const mine = (status?.members ?? []).find((member) => member.kind === 'user')?.name ?? '我'
+      const agents = (status?.members ?? []).filter((member) => member.kind === 'agent')
+      const wakeOn = status?.room?.wakeEnabled !== false
+
+      return h('div', {
+        style: {
+          position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
+          background: '#ededed', color: '#1a1a1a', fontFamily: 'inherit',
+        },
+      },
+      // status bar
+      h('div', {
+        style: {
+          display: 'flex', alignItems: 'center', gap: 10, padding: '0 14px', height: 44,
+          background: '#f7f7f7', borderBottom: '1px solid #e0e0e0', flex: '0 0 auto',
+        },
+      },
+      h('div', { style: { fontWeight: 600, fontSize: 14 } }, status?.room?.title ?? '群'),
+      agents.length > 0 && h('div', { style: { display: 'flex', gap: 2 } },
+        agents.slice(0, 2).map((agent) => h(Avatar, { key: agent.sessionId, name: agent.name, size: 20 }))
+      ),
+      h('div', { style: { flex: 1, fontSize: 12, color: '#7a7a7a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
+        h(StatusText, { status })),
+      h('button', {
+        onClick: () => setPicker(true),
+        style: { padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid #d5d5d5', background: '#fff', cursor: 'pointer' },
+      }, '成员'),
+      h('button', {
+        onClick: toggleWake,
+        title: wakeOn ? '正在叫醒：有新消息会把鱼叫起来' : '已静音：只落盘，不叫人',
+        style: {
+          padding: '4px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
+          border: `1px solid ${wakeOn ? '#9fd6a6' : '#d5d5d5'}`,
+          background: wakeOn ? '#eaf7ec' : '#fff',
+        },
+      }, wakeOn ? '叫醒 开' : '叫醒 关')
+      ),
+      // message list
+      h('div', {
+        ref: listRef,
+        onScroll,
+        style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '10px 16px 16px' },
+      },
+      meta.hasMore && h('div', { style: { textAlign: 'center', marginBottom: 8 } },
+        h('button', {
+          onClick: loadOlder,
+          style: { fontSize: 12, padding: '3px 10px', borderRadius: 10, border: '1px solid #d8d8d8', background: '#fff', cursor: 'pointer', color: '#666' },
+        }, '加载更早')
+      ),
+      meta.truncatedBefore !== null && meta.truncatedBefore !== undefined && h('div', {
+        style: { textAlign: 'center', fontSize: 12, color: '#9a9a9a', marginBottom: 8 },
+      }, `早于 seq=${meta.truncatedBefore} 的消息已清理（只留一周）`),
+      messages.map((message, index) => {
+        const previous = index === 0 ? undefined : messages[index - 1]
+        const divider = showTime(index, message, previous) ? h(TimeDivider, { key: `t-${message.seq}`, at: message.at }) : null
+        const body = message.kind === 'system'
+          ? h(SystemRow, { key: message.seq, message })
+          : h(Bubble, { key: message.seq, message, mine: message.from === mine })
+        return h(React.Fragment, { key: `f-${message.seq}` }, divider, body)
+      }),
+      messages.length === 0 && h('div', {
+        style: { textAlign: 'center', color: '#9a9a9a', fontSize: 13, marginTop: 40 },
+      }, '群里还没有消息。先点右上角「成员」把两条鱼拉进来。')
+      ),
+      // ack flash
+      ack !== null && status !== null && h('div', {
+        style: { position: 'absolute', left: 16, bottom: 84, fontSize: 12, color: '#7a7a7a', pointerEvents: 'none' },
+      }, `${ack.member} 看过了 · ${timeLabel(ack.at)}`),
+      error !== null && h('div', {
+        style: { position: 'absolute', left: 14, right: 14, bottom: 78, color: '#c0392b', fontSize: 12, background: '#fff4f2', padding: '6px 10px', borderRadius: 4 },
+        onClick: () => setError(null),
+      }, error),
+      // composer
+      h('div', {
+        style: { flex: '0 0 auto', borderTop: '1px solid #e0e0e0', background: '#f7f7f7', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' },
+      },
+      h('textarea', {
+        value: draft,
+        onChange: (event) => setDraft(event.target.value),
+        onKeyDown: (event) => {
+          if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {
+            event.preventDefault()
+            void send()
+          }
+        },
+        placeholder: '说点什么…（Enter 发送，Shift+Enter 换行）',
+        rows: 1,
+        style: {
+          flex: 1, resize: 'none', minHeight: 38, maxHeight: 140, padding: '9px 11px', fontSize: 14,
+          borderRadius: 6, border: '1px solid #dcdcdc', outline: 'none', fontFamily: 'inherit', lineHeight: 1.5,
+        },
+      }),
+      h('button', {
+        onClick: () => void send(),
+        disabled: draft.trim() === '',
+        style: {
+          padding: '0 18px', height: 38, borderRadius: 6, border: 'none',
+          background: draft.trim() === '' ? '#c9c9c9' : '#07c160', color: '#fff', cursor: draft.trim() === '' ? 'default' : 'pointer',
+          fontSize: 14, flex: '0 0 auto',
+        },
+      }, '发送')
+      ),
+      picker && h(MemberPicker, {
+        status,
+        onClose: () => setPicker(false),
+        onSaved: () => { setPicker(false); void refreshStatus(); void loadInitial() },
+      })
+      )
+    }
+
+    return {
+      inject: ['slots'],
+      apply(ctx) {
+        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+          name: 'sidebar.panellist', id: 'group', order: 100, label: '群',
+        }, GroupIcon))
+        ctx.slots.inject('main', () => ctx.slots.register({
+          name: 'main', key: 'group',
+        }, GroupPanel))
+      },
+    }
+  },
+})

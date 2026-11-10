@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Group chat">
+  <rect x="2" y="5" width="20" height="14" rx="4.5" fill="#3f7d5a"/>
+  <path d="M7 19v4.2c0 .8.94 1.24 1.58.74L13 19H7z" fill="#3f7d5a"/>
+  <circle cx="8.5" cy="12" r="1.6" fill="#ffffff"/>
+  <circle cx="12" cy="12" r="1.6" fill="#ffffff"/>
+  <circle cx="15.5" cy="12" r="1.6" fill="#ffffff"/>
+  <rect x="12" y="13" width="18" height="13" rx="4.5" fill="#8fbf9f"/>
+  <path d="M25 26v3.6c0 .8-.94 1.24-1.58.74L20 26h5z" fill="#8fbf9f"/>
+  <circle cx="17.5" cy="19.5" r="1.4" fill="#1f3a2a"/>
+  <circle cx="21" cy="19.5" r="1.4" fill="#1f3a2a"/>
+  <circle cx="24.5" cy="19.5" r="1.4" fill="#1f3a2a"/>
+</svg>

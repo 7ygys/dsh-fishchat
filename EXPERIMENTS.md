@@ -142,3 +142,49 @@ throwError  kick  preStep  toolsChanged  turn  step  prepareRequest  buildReques
 | `time-context` | 时间采样 |
 
 它们**没有 rpcId**，`sourceKind` 也不是 `user`。搬运时按 rpcId 认领就不会把它们当成群消息。
+
+---
+
+## 实验 8 · 端到端：没有界面，纯后端走通一整圈
+
+**22:35 · 结论：通了。方案第 12 节"第三层验收"提前达成。**
+
+**怎么做的**（全是 HTTP，没有界面）：
+
+```
+POST /rooms/r1/members  { members:[{sessionId:"session-eab0…", name:"测试鱼"}] }
+POST /rooms/r1/say      { text:"#测试鱼 在吗？只回一句话：在。" }
+等 12 秒
+GET  /rooms/r1/messages
+GET  /rooms/r1/status
+```
+
+**看到了什么**：
+
+```
+[1] 我(user):      #测试鱼 在吗？只回一句话：在。
+[2] 测试鱼(agent): 在。
+```
+
+状态接口：
+
+```
+我       kind=user  unread=2
+测试鱼   kind=agent running=false queued=0 unread=1
+```
+
+**证明的链条**：
+
+1. 用户消息落盘（seq=1）
+2. 1.5 秒窗口关闭 → 命中 `#测试鱼` → 投递指针
+3. 测试鱼被唤醒、开回合、跑 `room_read`、正常回答
+4. **搬运按 `source.rpcId` 找到自己的那一轮，把回答写回群里（seq=2）**
+5. 状态接口能读出每个人的 running / queued / unread
+
+**顺带验证的两件**：
+
+- 插件注册的 `/rooms` 路由**不需要 token**（`GET /` 返回 401，但 `/rooms/…` 返回 200）——说明 401 是 SPA 静态服务的准入，不是全局闸门。浏览器同源 fetch 更没有障碍。
+- 三个工具的守卫正确：在群里之外的会话调用 `room_read` 会拿到「你不在任何群里」，不是异常。
+
+**测试数据已清理**：删了 `~\.dsh\storages\rooms.json` 并重载插件。`CLEANUP.md` 第 4 条记了这个文件。
+
