@@ -141,10 +141,34 @@ export function apply(ctx) {
     return db2
   }
 
+  // Another process (a second DSH window) may have advanced the log since our
+  // last read. Pull its messages in before overwriting, so two long-running
+  // windows cannot silently erase each other's history.
+  function mergeDiskBeforeWrite() {
+    if (!existsSync(FILE)) return
+    let disk
+    try {
+      disk = JSON.parse(readFileSync(FILE, 'utf8'))
+    } catch {
+      return
+    }
+    if (!Number.isFinite(disk?.seq) || disk.seq <= db.seq) return
+    const known = new Set(messages().map((message) => message.seq))
+    const incoming = (disk.messages?.[ROOM_ID] ?? [])
+      .filter((message) => Number.isFinite(message?.seq) && !known.has(message.seq))
+    if (incoming.length > 0) {
+      db.messages[ROOM_ID].push(...incoming)
+      db.messages[ROOM_ID].sort((left, right) => left.seq - right.seq)
+    }
+    db.seq = Math.max(db.seq, disk.seq)
+    if (Number.isFinite(disk.earliestSeq)) db.earliestSeq = Math.min(db.earliestSeq, disk.earliestSeq)
+  }
+
   // The one writer. Every mutation funnels through here.
   function persist() {
     saveChain = saveChain.then(() => {
       try {
+        mergeDiskBeforeWrite()
         mkdirSync(dirname(FILE), { recursive: true })
         writeFileSync(FILE, JSON.stringify(db, null, 2), 'utf8')
       } catch (error) {
@@ -183,16 +207,37 @@ export function apply(ctx) {
     }
   }
 
+  function blobPath(name) {
+    return join(dirname(FILE), 'rooms-blobs', name)
+  }
+
   function appendMessage({ from, kind, text }) {
     trimHistory()
     db.seq += 1
+    const seq = db.seq
+    let body = String(text ?? '')
+    let blob = null
+    // A very long message keeps its body in its own file so the room log stays
+    // readable; the bubble carries a truncated copy plus the file's location.
+    if (body.length > MAX_MESSAGE_CHARS) {
+      const name = `${ROOM_ID}-${seq}.txt`
+      try {
+        mkdirSync(dirname(blobPath(name)), { recursive: true })
+        writeFileSync(blobPath(name), body, 'utf8')
+        blob = { name, chars: body.length, bytes: Buffer.byteLength(body, 'utf8') }
+        body = `${body.slice(0, MAX_MESSAGE_CHARS)}\n\n（太长，全文 ${blob.chars} 字，已存到 rooms-blobs/${name}）`
+      } catch (error) {
+        ctx.logger?.warn?.(`rooms: could not spill message ${seq}: ${shortError(error)}`)
+      }
+    }
     const message = {
-      seq: db.seq,
+      seq,
       roomId: ROOM_ID,
       from,
       kind,
-      text: String(text ?? '').slice(0, MAX_MESSAGE_CHARS),
+      text: body,
       at: Date.now(),
+      ...(blob === null ? {} : { blob }),
     }
     db.messages[ROOM_ID].push(message)
     void persist()
@@ -559,6 +604,7 @@ export function apply(ctx) {
       kind: message.kind,
       text: message.text,
       at: message.at,
+      ...(message.blob === undefined ? {} : { blob: message.blob }),
     }))
   }
 

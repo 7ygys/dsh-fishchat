@@ -75,7 +75,28 @@ window.__ModuleLoader__.load({
 
     function GroupIcon({ size = 20, active = false }) {
       const edge = Math.max(14, Math.round(size))
-      return h('svg', {
+      const [unread, setUnread] = useState(0)
+      useEffect(() => {
+        let alive = true
+        const tick = async () => {
+          if (document.visibilityState !== 'visible') return
+          try {
+            const data = await getJson(`${ROOM}/status`)
+            if (!alive) return
+            const user = (data.members ?? []).find((member) => member.kind === 'user')
+            setUnread(user?.unread ?? 0)
+          } catch {
+            /* transient: the host may be reloading */
+          }
+        }
+        void tick()
+        const handle = setInterval(tick, 5000)
+        return () => { alive = false; clearInterval(handle) }
+      }, [])
+      return h('div', {
+        style: { position: 'relative', display: 'inline-flex', width: edge, height: edge },
+      },
+      h('svg', {
         viewBox: '0 0 24 24',
         width: edge,
         height: edge,
@@ -88,6 +109,14 @@ window.__ModuleLoader__.load({
         h('circle', { cx: 9.5, cy: 8.5, r: 1.1, fill: active ? '#ffffff' : 'currentColor' }),
         h('circle', { cx: 12.5, cy: 15, r: 1.2, fill: active ? 'currentColor' : 'currentColor' }),
         h('circle', { cx: 16.5, cy: 15, r: 1.2, fill: active ? 'currentColor' : 'currentColor' })
+      ),
+      unread > 0 && h('span', {
+        title: `${unread} 条未读`,
+        style: {
+          position: 'absolute', top: -3, right: -3, minWidth: 8, height: 8, borderRadius: 4,
+          background: '#e34d59', boxShadow: '0 0 0 1.5px #fff', pointerEvents: 'none',
+        },
+      })
       )
     }
 
@@ -144,7 +173,10 @@ window.__ModuleLoader__.load({
             wordBreak: 'break-word',
             boxShadow: '0 1px 1px rgba(0,0,0,.05)',
           },
-        }, message.text)
+        }, message.text),
+        message.blob !== undefined && h('div', {
+          style: { fontSize: 11, color: '#8a8a8a', margin: '3px 4px 0', textAlign: mine ? 'right' : 'left' },
+        }, `全文 ${message.blob.chars} 字 · rooms-blobs/${message.blob.name}`)
       )
       )
     }
