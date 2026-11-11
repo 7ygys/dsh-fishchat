@@ -25,6 +25,10 @@ const KEEP_DAYS = 7
 const MAX_MESSAGE_CHARS = 8000
 const WATCH_TIMEOUT_MS = 5 * 60 * 1000
 const POINTER_PREFIX = 'room-'
+const AGENT_HORN_EVERY = 20
+// A bare acknowledgement answered in words is not worth a bubble. `room_ack`
+// is the supported way to say it; this only catches the model's habit.
+const CONFIRM_ONLY = /^(看过了|收到|明白了?|已读|了解|收到啦|知道了|看见了)[。.!！~～…\s]*$/
 
 export const name = 'rooms'
 export const inject = ['tools', 'webServer', 'sessionController']
@@ -117,8 +121,11 @@ export function apply(ctx) {
         createdAt: Number.isFinite(room.createdAt) ? room.createdAt : Date.now(),
         deleted: room.deleted === true,
         wakeEnabled: room.wakeEnabled !== false,
+        muteAgentToAgent: room.muteAgentToAgent === true,
         activity: room.activity ?? null,
         acks: room.acks ?? {},
+        receipts: room.receipts ?? {},
+        consecutiveAgent: Number.isFinite(room.consecutiveAgent) ? room.consecutiveAgent : 0,
         members: Array.isArray(room.members) ? room.members.filter((m) => m && typeof m.name === 'string') : [],
       }
       db2.messages[id] = Array.isArray(input.messages?.[id]) ? input.messages[id] : []
@@ -189,6 +196,7 @@ export function apply(ctx) {
     }
     db.messages[ROOM_ID].push(message)
     void persist()
+    routeMessage(message)
     return message
   }
 
@@ -226,12 +234,28 @@ export function apply(ctx) {
     })
   }
 
-  function pointerText(member, seqFrom, highlighted) {
-    const head = `【群】有新的群消息（从 seq=${seqFrom} 起）。先 room_read() 看。`
-    if (highlighted) {
-      return `${head}\n其中 #${member.name} 被点名，请务必回。你的回答会自动带回群里。`
-    }
-    return `${head}\n想接话就正常回答（会自动带回群里）；不想接话就调 room_ack()。`
+  // A pointer carries the batch's preview so the woken member can judge whether
+  // the turn is worth taking before spending one.
+  function previewLine(message) {
+    const flat = String(message?.text ?? '').replace(/\s+/g, ' ').trim()
+    const cut = flat.length <= 20 ? flat : `${flat.slice(0, 20)}…`
+    return `- ${message.from}：${cut}`
+  }
+
+  function pointerText(member, batch, highlighted) {
+    const first = batch[0]
+    const last = batch[batch.length - 1]
+    const range = first.seq === last.seq ? `seq ${first.seq}` : `seq ${first.seq}..${last.seq}`
+    const head = `【${room()?.title ?? '群'}】${batch.length} 条新消息（${range}）`
+    const receipt = room()?.receipts?.[member.name]
+    const receiptLine = receipt === undefined || receipt === null
+      ? null
+      : `（你上一条已带回群，seq=${receipt.seq}）`
+    const lines = batch.slice(-5).map(previewLine)
+    const footer = highlighted
+      ? `#${member.name} 被点名，请务必回。你的回答会自动带回群里。`
+      : '想接话就正常回答（会自动带回群里）；不想接话就调 room_ack()。'
+    return [head, receiptLine, ...lines, footer].filter((line) => line !== null).join('\n')
   }
 
   function scheduleDeliveryWindow(message) {
@@ -241,22 +265,64 @@ export function apply(ctx) {
       const from = windowFromSeq
       windowFromSeq = 0
       windowTimer = null
-      void flushWindow(from)
+      void flushUserWindow(from)
     }, DELIVERY_WINDOW_MS)
   }
 
-  async function flushWindow(fromSeq) {
+  // User messages: a `#name` narrows the delivery to the named members (work
+  // mode); otherwise everyone hears it (chat mode).
+  async function flushUserWindow(fromSeq) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
     const batch = messages().filter((message) => message.seq >= fromSeq && message.kind === 'user')
     if (batch.length === 0) return
     const normalized = batch.map((message) => String(message.text ?? '').normalize('NFKC')).join('\n')
-    for (const member of agentMembers()) {
-      await deliverTo(member, fromSeq, mentions(normalized, member.name))
+    const named = agentMembers().filter((member) => mentions(normalized, member.name))
+    const targets = named.length > 0 ? named : agentMembers()
+    for (const member of targets) {
+      await deliverTo(member, batch, mentions(normalized, member.name))
     }
   }
 
-  async function deliverTo(member, seqFrom, highlighted) {
+  // Agent messages never fan out on their own: without a `#name` they are just
+  // conversation, and waking every peer on every reply would loop with nobody
+  // left to stop it.
+  async function deliverAgentMessage(message) {
+    const current = room()
+    if (current === undefined || current.deleted || current.wakeEnabled === false) return
+    if (current.muteAgentToAgent === true) return
+    const normalized = String(message.text ?? '').normalize('NFKC')
+    // Never wake the sender: a message that names its own author would start a
+    // turn on the very session that just produced it.
+    const named = agentMembers().filter((member) => member.name !== message.from && mentions(normalized, member.name))
+    if (named.length === 0) return
+    for (const member of named) {
+      await deliverTo(member, [message], true)
+    }
+  }
+
+  function routeMessage(message) {
+    if (message.kind === 'system') return
+    const current = room()
+    if (current === undefined) return
+    if (message.kind === 'user') {
+      if (current.consecutiveAgent > 0) {
+        current.consecutiveAgent = 0
+        void persist()
+      }
+      scheduleDeliveryWindow(message)
+      return
+    }
+    // Agent message: the watchdog only speaks up, it never stops anything.
+    current.consecutiveAgent += 1
+    if (current.consecutiveAgent === AGENT_HORN_EVERY) {
+      appendSystem(`已经连续 ${AGENT_HORN_EVERY} 条 agent 消息没有你说话了。只是提醒，不会停任何东西。`)
+    }
+    void persist()
+    void deliverAgentMessage(message)
+  }
+
+  async function deliverTo(member, batch, highlighted) {
     if (deliveries.has(member.sessionId)) return
     let state
     try {
@@ -277,7 +343,7 @@ export function apply(ctx) {
         requestId,
         sessionId: member.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: pointerText(member, seqFrom, highlighted) }],
+        content: [{ type: 'text', text: pointerText(member, batch, highlighted) }],
       }, AbortSignal.timeout(15000))
     } catch (error) {
       appendSystem(`${member.name} 没有响应（${shortError(error)}）`)
@@ -345,7 +411,13 @@ export function apply(ctx) {
       .filter((text) => text !== '')
     const text = assistantTexts[assistantTexts.length - 1]
     if (text === undefined) return
-    appendMessage({ from: member.name, kind: 'agent', text })
+    if (CONFIRM_ONLY.test(text)) return
+    const message = appendMessage({ from: member.name, kind: 'agent', text })
+    const current = room()
+    if (current !== undefined) {
+      current.receipts[member.name] = { seq: message.seq, at: Date.now() }
+      void persist()
+    }
   }
 
   function shortError(error) {
@@ -430,11 +502,18 @@ export function apply(ctx) {
       .map(([member, value]) => ({ member, at: value?.at ?? 0, seq: value?.seq ?? 0 }))
       .sort((left, right) => right.at - left.at)
     return {
-      room: { id: ROOM_ID, title: current?.title ?? '群', wakeEnabled: current?.wakeEnabled !== false },
+      room: {
+        id: ROOM_ID,
+        title: current?.title ?? '群',
+        wakeEnabled: current?.wakeEnabled !== false,
+        muteAgentToAgent: current?.muteAgentToAgent === true,
+      },
       seq: db.seq,
       earliestSeq: db.earliestSeq,
+      consecutiveAgent: current?.consecutiveAgent ?? 0,
       members,
       lastAck: ackEntries[0] ?? null,
+      receipts: current?.receipts ?? {},
     }
   }
 
@@ -548,18 +627,40 @@ export function apply(ctx) {
         }
         return json(res, 200, { wakeEnabled: current?.wakeEnabled !== false })
       }
+      if (method === 'POST' && path === '/rooms/r1/mute') {
+        const body = await readBody(req)
+        const current = room()
+        if (current !== undefined) {
+          current.muteAgentToAgent = body.enabled === true
+          void persist()
+        }
+        return json(res, 200, { muteAgentToAgent: current?.muteAgentToAgent === true })
+      }
       if (method === 'POST' && path === '/rooms/r1/members') {
         const body = await readBody(req)
         const incoming = Array.isArray(body.members) ? body.members : []
+        const previous = new Map(
+          (room()?.members ?? [])
+            .filter((member) => member.kind === 'agent' && typeof member.sessionId === 'string')
+            .map((member) => [member.sessionId, member]),
+        )
         const agents = incoming
           .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.sessionId === 'string')
           .slice(0, 2)
-          .map((entry) => ({
-            kind: 'agent',
-            name: typeof entry.name === 'string' && entry.name.trim() !== '' ? entry.name.trim().slice(0, 24) : '成员',
-            sessionId: entry.sessionId,
-            lastReadSeq: 0,
-          }))
+          .map((entry) => {
+            const before = previous.get(entry.sessionId)
+            const name = typeof entry.name === 'string' && entry.name.trim() !== ''
+              ? entry.name.trim().slice(0, 24)
+              : (before?.name ?? '成员')
+            return {
+              kind: 'agent',
+              name,
+              sessionId: entry.sessionId,
+              // Renaming must not rewind a member's cursor: that would make it
+              // read the whole history again.
+              lastReadSeq: Number.isFinite(before?.lastReadSeq) ? before.lastReadSeq : 0,
+            }
+          })
         const current = room()
         if (current !== undefined) {
           const user = userMember()
@@ -618,11 +719,13 @@ export function apply(ctx) {
 
   const readTool = {
     name: 'room_read',
-    description: '读「群」里你还没看过的消息。会自动从你上次读到的位置往后读，读完后游标推进，所以重复调用不会重复返回。群消息的全文只在这里能拿到——别人只会在你的会话里留一条很短的提示。',
+    description: '读「群」里的消息。默认从你上次读到的位置往后读（读完后游标推进，重复调用不会重复返回）。也支持回看：给 `before`（某个 seq 之前的几条）或 `after`（某个 seq 之后的几条），这两种不推进游标。',
     parameters: {
       type: 'object',
       properties: {
         limit: { type: 'number', description: `最多读几条，默认 ${READ_LIMIT}，上限 50。` },
+        before: { type: 'number', description: '可选。读 seq 小于这个值的最近几条（回看用，不推进游标）。' },
+        after: { type: 'number', description: '可选。读 seq 大于这个值的几条（补看用，不推进游标）。' },
       },
     },
     output: {
@@ -652,6 +755,19 @@ export function apply(ctx) {
       const requested = Number.parseInt(String(args?.limit ?? ''), 10)
       const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 50) : READ_LIMIT
       const all = messages()
+      const after = Number(args?.after)
+      if (Number.isFinite(after)) {
+        return { messages: publicMessages(all.filter((message) => message.seq > after).slice(0, limit)), lastSeq: db.seq }
+      }
+      const before = Number(args?.before)
+      if (Number.isFinite(before)) {
+        const older = all.filter((message) => message.seq < before)
+        return {
+          messages: publicMessages(older.slice(Math.max(0, older.length - limit))),
+          lastSeq: db.seq,
+          truncatedBefore: db.earliestSeq > 1 && before <= db.earliestSeq ? db.earliestSeq : undefined,
+        }
+      }
       const from = Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0
       const truncatedBefore = db.earliestSeq > 1 && from < db.earliestSeq - 1 ? db.earliestSeq : undefined
       const fresh = all.filter((message) => message.seq > from)
@@ -671,19 +787,28 @@ export function apply(ctx) {
   const ackTool = {
     name: 'room_ack',
     description: '表示「我看到了，这一轮不说话」。调用后这一轮不会把你的回答搬进群里。注意：这是群聊里的「已读」，不是拒绝，也不是结束对话——用户会在群界面上看到「你看过了」。不想接话的时候才用它。',
-    parameters: { type: 'object', properties: {} },
+    parameters: {
+      type: 'object',
+      properties: {
+        note: { type: 'string', description: '可选备注，只留在群数据里备查，不进群、不进你的上下文。' },
+      },
+    },
     output: {
       schema: { type: 'object', properties: { acked: { type: 'boolean' } }, required: ['acked'] },
       render() {
         return [{ type: 'text', text: '已标记为「看过了，不回」。' }]
       },
     },
-    async execute(_args, exec) {
+    async execute(args, exec) {
       const member = callerMember(exec)
       if (member === undefined) throw new Error('你不在任何群里，不能使用 room_ack。')
       const current = room()
       if (current !== undefined) {
-        current.acks[member.name] = { at: Date.now(), seq: db.seq }
+        current.acks[member.name] = {
+          at: Date.now(),
+          seq: db.seq,
+          ...(typeof args?.note === 'string' && args.note.trim() !== '' ? { note: args.note.trim().slice(0, 200) } : {}),
+        }
         void persist()
       }
       runtime.set(member.sessionId, { ...(runtime.get(member.sessionId) ?? {}), lastAckAt: Date.now() })

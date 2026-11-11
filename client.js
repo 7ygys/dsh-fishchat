@@ -199,7 +199,8 @@ window.__ModuleLoader__.load({
             return next
           }
           if (Object.keys(next).length >= 2) return next
-          next[item.sessionId] = (item.title ?? item.cwd ?? '成员').slice(0, 12)
+          const short = String(item.title ?? item.cwd ?? '成员').replace(/[（(【\[].*$/, '').trim()
+          next[item.sessionId] = (short || '成员').slice(0, 4)
           return next
         })
       }
@@ -264,16 +265,20 @@ window.__ModuleLoader__.load({
                 `${item.cwd ?? ''} · ${timeLabel(item.updatedAt ?? Date.now())}${item.running ? ' · 正在跑' : ''}`)
             )
           ),
-          active && h('input', {
-            value: selected[item.sessionId],
-            onClick: (event) => event.stopPropagation(),
-            onChange: (event) => rename(item.sessionId, event.target.value),
-            placeholder: '群里怎么称呼它',
-            style: {
-              marginTop: 6, marginLeft: 24, width: '70%', padding: '4px 8px', fontSize: 12,
-              border: '1px solid #ddd', borderRadius: 4,
-            },
-          })
+          active && h('div', { style: { marginTop: 6, marginLeft: 24, display: 'flex', alignItems: 'center', gap: 6 } },
+            h('span', { style: { fontSize: 11, color: '#888', whiteSpace: 'nowrap' } }, '群里叫它'),
+            h('input', {
+              value: selected[item.sessionId],
+              onClick: (event) => event.stopPropagation(),
+              onChange: (event) => rename(item.sessionId, event.target.value),
+              placeholder: '短一点，`#` 用它点名',
+              autoFocus: true,
+              style: {
+                width: 150, padding: '4px 8px', fontSize: 12,
+                border: '1px solid #b9d4ef', borderRadius: 4,
+              },
+            })
+          )
           )
         })
       ),
@@ -418,9 +423,20 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const toggleMute = async () => {
+        try {
+          const next = !(status?.room?.muteAgentToAgent === true)
+          await postJson(`${ROOM}/mute`, { enabled: next })
+          void refreshStatus()
+        } catch (error) {
+          setError(String(error.message ?? error))
+        }
+      }
+
       const mine = (status?.members ?? []).find((member) => member.kind === 'user')?.name ?? '我'
       const agents = (status?.members ?? []).filter((member) => member.kind === 'agent')
       const wakeOn = status?.room?.wakeEnabled !== false
+      const muted = status?.room?.muteAgentToAgent === true
 
       return h('div', {
         style: {
@@ -453,7 +469,16 @@ window.__ModuleLoader__.load({
           border: `1px solid ${wakeOn ? '#9fd6a6' : '#d5d5d5'}`,
           background: wakeOn ? '#eaf7ec' : '#fff',
         },
-      }, wakeOn ? '叫醒 开' : '叫醒 关')
+      }, wakeOn ? '叫醒' : '不叫'),
+      h('button', {
+        onClick: toggleMute,
+        title: muted ? '大静默：鱼之间不再互相点名叫醒（你说话照常）' : '鱼之间可以互相点名叫醒',
+        style: {
+          padding: '4px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
+          border: `1px solid ${muted ? '#e0b0a0' : '#d5d5d5'}`,
+          background: muted ? '#fdeee8' : '#fff',
+        },
+      }, muted ? '鱼静默' : '鱼可叫')
       ),
       // message list
       h('div', {
@@ -503,7 +528,7 @@ window.__ModuleLoader__.load({
             void send()
           }
         },
-        placeholder: '说点什么…（Enter 发送，Shift+Enter 换行）',
+        placeholder: '说点什么…（用 #名字 派活 · Enter 发送 · Shift+Enter 换行）',
         rows: 1,
         style: {
           flex: 1, resize: 'none', minHeight: 38, maxHeight: 140, padding: '9px 11px', fontSize: 14,
