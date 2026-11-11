@@ -20,10 +20,13 @@ import { randomUUID } from 'node:crypto'
 
 const ROOM_ID = 'r1'
 const DELIVERY_WINDOW_MS = 1500
+// A fast typist keeps resetting the debounce; the batch still has to leave.
+const DELIVERY_WINDOW_MAX_MS = 6000
 const READ_LIMIT = 20
 const KEEP_DAYS = 7
 const MAX_MESSAGE_CHARS = 8000
-const WATCH_TIMEOUT_MS = 5 * 60 * 1000
+const WATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000
+const LONG_TURN_NOTICE_MS = 10 * 60 * 1000
 const POINTER_PREFIX = 'room-'
 const AGENT_HORN_EVERY = 20
 // A bare acknowledgement answered in words is not worth a bubble. `room_ack`
@@ -86,10 +89,12 @@ export function apply(ctx) {
   let db = loadDb()
   let saveChain = Promise.resolve()
   const deliveries = new Map() // sessionId -> delivery record
+  const pendingDelivery = new Map() // sessionId -> { fromSeq } that arrived mid-turn
   const runtime = new Map() // sessionId -> { lastSayAt, lastAckAt }
   const memberState = new Map() // name -> { live, running, queued }
   let windowTimer = null
   let windowFromSeq = 0
+  let windowOpenedAt = 0
 
   // ---------------------------------------------------------------- storage
 
@@ -125,6 +130,7 @@ export function apply(ctx) {
         activity: room.activity ?? null,
         acks: room.acks ?? {},
         receipts: room.receipts ?? {},
+        inflight: room.inflight ?? {},
         consecutiveAgent: Number.isFinite(room.consecutiveAgent) ? room.consecutiveAgent : 0,
         members: Array.isArray(room.members) ? room.members.filter((m) => m && typeof m.name === 'string') : [],
       }
@@ -166,20 +172,14 @@ export function apply(ctx) {
     const kept = list.filter((message) => message.at >= cutoff)
     if (kept.length === list.length) return
     db.messages[ROOM_ID] = kept
-    const earliest = kept.length > 0 ? kept[0].seq : db.seq + 1
-    db.earliestSeq = earliest
-    if (current.lastTrimNoticeAt === undefined || Date.now() - current.lastTrimNoticeAt > 24 * 60 * 60 * 1000) {
-      current.lastTrimNoticeAt = Date.now()
-      db.seq += 1
-      kept.unshift({
-        seq: db.seq,
-        roomId: ROOM_ID,
-        from: '系统',
-        kind: 'system',
-        text: `更早的消息已清理（只保留最近 ${KEEP_DAYS} 天）`,
-        at: Date.now(),
-        sortSeq: db.seq,
-      })
+    db.earliestSeq = kept.length > 0 ? kept[0].seq : db.seq + 1
+    // No marker message on purpose: it would need a seq, and any seq newer than
+    // the kept messages would break the ascending order every cursor relies on.
+    // The client renders `truncatedBefore` instead.
+    for (const member of current.members ?? []) {
+      if (Number.isFinite(member.lastReadSeq) && member.lastReadSeq < db.earliestSeq - 1) {
+        member.lastReadSeq = db.earliestSeq - 1
+      }
     }
   }
 
@@ -279,14 +279,19 @@ export function apply(ctx) {
   }
 
   function scheduleDeliveryWindow(message) {
-    if (windowFromSeq === 0) windowFromSeq = message.seq
+    if (windowFromSeq === 0) {
+      windowFromSeq = message.seq
+      windowOpenedAt = Date.now()
+    }
     if (windowTimer !== null) clearTimeout(windowTimer)
+    const waited = Date.now() - windowOpenedAt
+    const delay = Math.max(0, Math.min(DELIVERY_WINDOW_MS, DELIVERY_WINDOW_MAX_MS - waited))
     windowTimer = setTimeout(() => {
       const from = windowFromSeq
       windowFromSeq = 0
       windowTimer = null
       void flushUserWindow(from)
-    }, DELIVERY_WINDOW_MS)
+    }, delay)
   }
 
   // User messages: a `#name` narrows the delivery to the named members (work
@@ -345,7 +350,16 @@ export function apply(ctx) {
   }
 
   async function deliverTo(member, batch, highlighted) {
-    if (deliveries.has(member.sessionId)) return
+    // Already waiting on a turn for this member. Do not drop the message: the
+    // queued pointer cannot carry it (it was never sent), so remember the seq
+    // and re-deliver once that turn settles.
+    if (deliveries.has(member.sessionId)) {
+      const previous = pendingDelivery.get(member.sessionId)
+      pendingDelivery.set(member.sessionId, {
+        fromSeq: Math.min(previous?.fromSeq ?? batch[0].seq, batch[0].seq),
+      })
+      return
+    }
     let state
     try {
       state = await ctx.sessionController.state({ sessionId: member.sessionId }, AbortSignal.timeout(5000))
@@ -373,8 +387,21 @@ export function apply(ctx) {
     }
     const record = { requestId, cursorBefore, startedAt, sawRunning: false, memberName: member.name }
     deliveries.set(member.sessionId, record)
+    const current = room()
+    if (current !== undefined) {
+      // Persisted so a plugin reload mid-turn does not orphan the answer.
+      current.inflight[member.sessionId] = { requestId, cursorBefore, startedAt, memberName: member.name }
+      void persist()
+    }
     setMemberStatus(member.name, { activity: 'thinking' })
     void watchDelivery(member, record)
+  }
+
+  function clearInflight(sessionId) {
+    const current = room()
+    if (current?.inflight === undefined || current.inflight[sessionId] === undefined) return
+    delete current.inflight[sessionId]
+    void persist()
   }
 
   async function watchDelivery(member, record) {
@@ -391,6 +418,10 @@ export function apply(ctx) {
         if (state.running) {
           record.sawRunning = true
           setMemberStatus(member.name, { running: true, queued: 0 })
+          if (record.longNotified !== true && Date.now() - record.startedAt > LONG_TURN_NOTICE_MS) {
+            record.longNotified = true
+            appendSystem(`${member.name} 还在跑，已经超过 ${Math.round(LONG_TURN_NOTICE_MS / 60000)} 分钟。它会跑完，不会被打断。`)
+          }
           continue
         }
         setMemberStatus(member.name, { running: false })
@@ -404,7 +435,32 @@ export function apply(ctx) {
       deliveries.delete(member.sessionId)
       setMemberStatus(member.name, { activity: null, running: false })
     }
-    await harvest(member, record)
+    try {
+      await harvest(member, record)
+    } finally {
+      clearInflight(member.sessionId)
+    }
+    // Messages that arrived while this turn was running were only remembered,
+    // never sent. Deliver them now that the member is free again.
+    const pending = pendingDelivery.get(member.sessionId)
+    if (pending !== undefined) {
+      pendingDelivery.delete(member.sessionId)
+      const fresh = messages().filter((message) => message.seq >= pending.fromSeq && message.kind !== 'system')
+      if (fresh.length > 0) {
+        const normalized = fresh.map((message) => String(message.text ?? '').normalize('NFKC')).join('\n')
+        void deliverTo(member, fresh.slice(-5), mentions(normalized, member.name))
+      }
+    }
+  }
+
+  function commitHarvest(member, text) {
+    if (CONFIRM_ONLY.test(text)) return
+    const message = appendMessage({ from: member.name, kind: 'agent', text })
+    const current = room()
+    if (current !== undefined) {
+      current.receipts[member.name] = { seq: message.seq, at: Date.now() }
+      void persist()
+    }
   }
 
   async function harvest(member, record) {
@@ -415,9 +471,10 @@ export function apply(ctx) {
     try {
       page = await ctx.sessionController.events({
         address: { kind: 'session', sessionId: member.sessionId },
-        maxMessages: 80,
+        maxMessages: 200,
       }, AbortSignal.timeout(10000))
-    } catch {
+    } catch (error) {
+      ctx.logger?.warn?.(`rooms: harvest could not read ${member.name}: ${shortError(error)}`)
       return
     }
     const records = Array.isArray(page?.records) ? page.records : []
@@ -425,21 +482,32 @@ export function apply(ctx) {
       const event = entry?.event
       return event?.type === 'user/message' && event?.data?.source?.rpcId === record.requestId
     })
-    if (startIndex < 0) return
-    const assistantTexts = records
-      .slice(startIndex + 1)
+    if (startIndex >= 0) {
+      const texts = records
+        .slice(startIndex + 1)
+        .filter((entry) => entry?.event?.type === 'assistant/message')
+        .map((entry) => textOf(entry.event.data?.message?.content))
+        .filter((text) => text !== '')
+      const text = texts[texts.length - 1]
+      if (text === undefined) return
+      commitHarvest(member, text)
+      return
+    }
+    // A long turn can push the pointer past the read window. Fall back to the
+    // first assistant text after the delivery cursor rather than dropping the
+    // answer on the floor silently.
+    const fallback = records
+      .filter((entry) => (entry?.event?.seq ?? 0) > record.cursorBefore)
       .filter((entry) => entry?.event?.type === 'assistant/message')
       .map((entry) => textOf(entry.event.data?.message?.content))
       .filter((text) => text !== '')
-    const text = assistantTexts[assistantTexts.length - 1]
-    if (text === undefined) return
-    if (CONFIRM_ONLY.test(text)) return
-    const message = appendMessage({ from: member.name, kind: 'agent', text })
-    const current = room()
-    if (current !== undefined) {
-      current.receipts[member.name] = { seq: message.seq, at: Date.now() }
-      void persist()
+    const text = fallback[fallback.length - 1]
+    if (text === undefined) {
+      ctx.logger?.warn?.(`rooms: ${member.name} produced no assistant text for ${record.requestId}`)
+      return
     }
+    ctx.logger?.warn?.(`rooms: pointer for ${member.name} fell out of the window; harvested the last answer instead`)
+    commitHarvest(member, text)
   }
 
   function shortError(error) {
@@ -848,6 +916,45 @@ export function apply(ctx) {
     if (windowTimer !== null) clearTimeout(windowTimer)
     windowTimer = null
   })
+
+  // A reload during a turn would otherwise lose that turn's answer: pick up the
+  // persisted deliveries once the process has settled.
+  ctx.effect(() => {
+    const handle = setTimeout(() => { void recoverInflight() }, 10000)
+    return () => clearTimeout(handle)
+  })
+
+  async function recoverInflight() {
+    const current = room()
+    if (current?.inflight === undefined || Object.keys(current.inflight).length === 0) return
+    for (const [sessionId, item] of Object.entries(current.inflight)) {
+      const member = agentMembers().find((candidate) => candidate.sessionId === sessionId)
+      if (member === undefined) {
+        delete current.inflight[sessionId]
+        continue
+      }
+      let state = null
+      try {
+        state = await ctx.sessionController.state({ sessionId }, AbortSignal.timeout(5000))
+      } catch {
+        state = null
+      }
+      if (state?.running === true) continue
+      try {
+        await harvest(member, {
+          requestId: item.requestId,
+          cursorBefore: item.cursorBefore,
+          startedAt: item.startedAt,
+          memberName: item.memberName ?? member.name,
+          sawRunning: true,
+        })
+      } catch (error) {
+        ctx.logger?.warn?.(`rooms: recovery for ${member.name} failed: ${shortError(error)}`)
+      }
+      delete current.inflight[sessionId]
+    }
+    void persist()
+  }
 
   ctx.logger?.info?.(`rooms: ready, ${agentMembers().length} agent member(s), ${messages().length} message(s)`)
 }

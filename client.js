@@ -304,6 +304,7 @@ window.__ModuleLoader__.load({
       const [ack, setAck] = useState(null)
       const listRef = useRef(null)
       const lastSeqRef = useRef(0)
+      const ackAtRef = useRef(0)
       const stickRef = useRef(true)
       const scrollHeightRef = useRef(0)
 
@@ -312,7 +313,12 @@ window.__ModuleLoader__.load({
           const data = await getJson(`${ROOM}/status`)
           setStatus(data)
           const latest = (data.members ?? []).find((member) => member.kind === 'agent')
-          if (data.lastAck !== null && data.lastAck !== undefined) setAck(data.lastAck)
+          // Only a NEW acknowledgement flashes; an old one must not sit on
+          // screen forever while the panel keeps polling.
+          if (data.lastAck !== null && data.lastAck !== undefined && data.lastAck.at !== ackAtRef.current) {
+            ackAtRef.current = data.lastAck.at
+            setAck(data.lastAck)
+          }
           return latest
         } catch (error) {
           setError(String(error.message ?? error))
@@ -333,6 +339,12 @@ window.__ModuleLoader__.load({
       }, [])
 
       useEffect(() => { void loadInitial(); void refreshStatus() }, [loadInitial, refreshStatus])
+
+      useEffect(() => {
+        if (ack === null) return
+        const handle = setTimeout(() => setAck(null), 6000)
+        return () => clearTimeout(handle)
+      }, [ack])
 
       // Poll the delta while the panel is visible; stop when it is not.
       useEffect(() => {
