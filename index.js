@@ -242,6 +242,21 @@ export function apply(ctx) {
     return `- ${message.from}：${cut}`
   }
 
+  // Who wrote the batch. The API cannot carry a custom source on a prompt, but
+  // the model reads the body, so the origin is stated there.
+  function originLine(batch) {
+    const seen = new Set()
+    const names = []
+    for (const message of batch) {
+      const label = message.kind === 'user' ? `${message.from}（用户）` : `${message.from}（另一个 agent）`
+      if (!seen.has(label)) {
+        seen.add(label)
+        names.push(label)
+      }
+    }
+    return `发起者：${names.join('、')}`
+  }
+
   function pointerText(member, batch, highlighted) {
     const first = batch[0]
     const last = batch[batch.length - 1]
@@ -252,10 +267,15 @@ export function apply(ctx) {
       ? null
       : `（你上一条已带回群，seq=${receipt.seq}）`
     const lines = batch.slice(-5).map(previewLine)
-    const footer = highlighted
-      ? `#${member.name} 被点名，请务必回。你的回答会自动带回群里。`
-      : '想接话就正常回答（会自动带回群里）；不想接话就调 room_ack()。'
-    return [head, receiptLine, ...lines, footer].filter((line) => line !== null).join('\n')
+    let footer
+    if (highlighted) {
+      footer = `#${member.name} 被点名，请务必回。只回群里这一条，别顺手做历史里的活。`
+    } else if (batch.some((message) => message.kind !== 'user')) {
+      footer = '这是群里的旁听内容，不是你被派的活。看看就好，不想回就调 room_ack()。'
+    } else {
+      footer = '想接话就正常回答（会自动带回群里）；不想接话就调 room_ack()。'
+    }
+    return [head, originLine(batch), receiptLine, ...lines, footer].filter((line) => line !== null).join('\n')
   }
 
   function scheduleDeliveryWindow(message) {
@@ -290,6 +310,8 @@ export function apply(ctx) {
   async function deliverAgentMessage(message) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
+    // Muted: the message is stored and nothing is queued. Turning the mute off
+    // later never replays it — a quiet stretch stays quiet.
     if (current.muteAgentToAgent === true) return
     const normalized = String(message.text ?? '').normalize('NFKC')
     // Never wake the sender: a message that names its own author would start a
@@ -685,7 +707,7 @@ export function apply(ctx) {
 
   const sayTool = {
     name: 'room_say',
-    description: '往「群」里说一句话。群是你和用户、以及另一个 agent 共用的聊天室。平时不必调用它——你在自己会话里的正常回答会自动被带回群里；只有想额外补一句、或者主动开口时才用它。',
+    description: '往「群」里说一句话。群是你和用户、以及另一个 agent 共用的聊天室。平时不必调用它——你在自己会话里的正常回答会自动被带回群里；只有想额外补一句、或者主动开口时才用它。想专门找某个人（叫醒它），就在正文里写 #名字；可以一次点多个，比如 `#灯 #散樱 你们俩看一下`。',
     parameters: {
       type: 'object',
       properties: {
