@@ -211,7 +211,7 @@ export function apply(ctx) {
     return join(dirname(FILE), 'rooms-blobs', name)
   }
 
-  function appendMessage({ from, kind, text }) {
+  function appendMessage({ from, kind, text, memberId }) {
     trimHistory()
     db.seq += 1
     const seq = db.seq
@@ -237,6 +237,10 @@ export function apply(ctx) {
       kind,
       text: body,
       at: Date.now(),
+      // `memberId` is the durable identity: `from` is only the name at send
+      // time, and names get changed. Old rows have no memberId and fall back to
+      // their recorded signature.
+      ...(memberId === undefined ? {} : { memberId }),
       ...(blob === null ? {} : { blob }),
     }
     db.messages[ROOM_ID].push(message)
@@ -502,7 +506,7 @@ export function apply(ctx) {
 
   function commitHarvest(member, text) {
     if (CONFIRM_ONLY.test(text)) return
-    const message = appendMessage({ from: member.name, kind: 'agent', text })
+    const message = appendMessage({ from: member.name, kind: 'agent', text, memberId: member.sessionId })
     const current = room()
     if (current !== undefined) {
       current.receipts[member.name] = { seq: message.seq, at: Date.now() }
@@ -606,6 +610,7 @@ export function apply(ctx) {
       kind: message.kind,
       text: message.text,
       at: message.at,
+      ...(message.memberId === undefined ? {} : { memberId: message.memberId }),
       ...(message.blob === undefined ? {} : { blob: message.blob }),
     }))
   }
@@ -744,7 +749,7 @@ export function apply(ctx) {
         const body = await readBody(req)
         const text = typeof body.text === 'string' ? body.text.trim() : ''
         if (text === '') return json(res, 400, { error: 'text is required' })
-        const message = appendMessage({ from: userMember()?.name ?? '我', kind: 'user', text })
+        const message = appendMessage({ from: userMember()?.name ?? '我', kind: 'user', text, memberId: 'user' })
         scheduleDeliveryWindow(message)
         return json(res, 200, { message })
       }
@@ -784,7 +789,7 @@ export function apply(ctx) {
         )
         const agents = incoming
           .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.sessionId === 'string')
-          .slice(0, 2)
+          .slice(0, 3)
           .map((entry) => {
             const before = previous.get(entry.sessionId)
             const name = typeof entry.name === 'string' && entry.name.trim() !== ''
@@ -858,7 +863,7 @@ export function apply(ctx) {
       if (member === undefined) throw new Error('你不在任何群里，不能使用 room_say。')
       const text = String(args?.text ?? '').trim()
       if (text === '') throw new Error('text 不能为空。')
-      const message = appendMessage({ from: member.name, kind: 'agent', text })
+      const message = appendMessage({ from: member.name, kind: 'agent', text, memberId: member.sessionId })
       runtime.set(member.sessionId, { ...(runtime.get(member.sessionId) ?? {}), lastSayAt: Date.now() })
       return { seq: message.seq, from: member.name }
     },

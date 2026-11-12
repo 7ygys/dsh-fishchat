@@ -146,7 +146,21 @@ window.__ModuleLoader__.load({
       }, timeLabel(at))
     }
 
-    function Bubble({ message, mine }) {
+    // A message shows its sender's CURRENT name when its durable identity is
+    // known; rows from before memberId existed keep their recorded signature.
+    function nameFor(message, members) {
+      if (message.memberId === 'user') {
+        const user = (members ?? []).find((entry) => entry.kind === 'user')
+        return user?.name ?? message.from
+      }
+      if (typeof message.memberId === 'string') {
+        const agent = (members ?? []).find((entry) => entry.sessionId === message.memberId)
+        if (agent !== undefined) return agent.name
+      }
+      return message.from
+    }
+
+    function Bubble({ message, mine, name }) {
       return h('div', {
         style: {
           display: 'flex',
@@ -156,11 +170,11 @@ window.__ModuleLoader__.load({
           margin: '6px 0',
         },
       },
-      h(Avatar, { name: message.from }),
+      h(Avatar, { name: name }),
       h('div', { style: { maxWidth: '68%', minWidth: 40 } },
         h('div', {
           style: { fontSize: 11, color: '#8a8a8a', margin: '0 4px 3px', textAlign: mine ? 'right' : 'left' },
-        }, message.from),
+        }, name),
         h('div', {
           style: {
             background: mine ? '#95ec69' : '#ffffff',
@@ -230,7 +244,7 @@ window.__ModuleLoader__.load({
             delete next[item.sessionId]
             return next
           }
-          if (Object.keys(next).length >= 2) return next
+          if (Object.keys(next).length >= 3) return next
           const short = String(item.title ?? item.cwd ?? '成员').replace(/[（(【\[].*$/, '').trim()
           next[item.sessionId] = (short || '成员').slice(0, 4)
           return next
@@ -271,8 +285,8 @@ window.__ModuleLoader__.load({
       h('div', {
         style: { padding: '12px 16px', fontWeight: 600, borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between' },
       },
-      h('span', null, '选成员（最多两条鱼）'),
-      h('span', { style: { color: '#999', fontWeight: 400, fontSize: 12 } }, `已选 ${Object.keys(selected).length}/2`)
+      h('span', null, '选成员（最多三条鱼）'),
+      h('span', { style: { color: '#999', fontWeight: 400, fontSize: 12 } }, `已选 ${Object.keys(selected).length}/3`)
       ),
       h('div', { style: { overflowY: 'auto', flex: 1 } },
         error !== null && h('div', { style: { padding: 12, color: '#c0392b' } }, error),
@@ -542,9 +556,10 @@ window.__ModuleLoader__.load({
       messages.map((message, index) => {
         const previous = index === 0 ? undefined : messages[index - 1]
         const divider = showTime(index, message, previous) ? h(TimeDivider, { key: `t-${message.seq}`, at: message.at }) : null
+        const displayName = nameFor(message, status?.members)
         const body = message.kind === 'system'
           ? h(SystemRow, { key: message.seq, message })
-          : h(Bubble, { key: message.seq, message, mine: message.from === mine })
+          : h(Bubble, { key: message.seq, message, mine: displayName === mine, name: displayName })
         return h(React.Fragment, { key: `f-${message.seq}` }, divider, body)
       }),
       messages.length === 0 && h('div', {
