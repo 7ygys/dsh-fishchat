@@ -279,12 +279,14 @@ export function apply(ctx) {
     })
   }
 
-  // A pointer carries the batch's preview so the woken member can judge whether
-  // the turn is worth taking before spending one.
+  // A pointer is a doorbell, not the letter: one short preview so the woken
+  // member can decide whether the turn is worth taking, and the length so it
+  // knows what it is skipping.
   function previewLine(message) {
     const flat = String(message?.text ?? '').replace(/\s+/g, ' ').trim()
-    const cut = flat.length <= 20 ? flat : `${flat.slice(0, 20)}…`
-    return `- ${message.from}：${cut}`
+    const cut = flat.length <= 30 ? flat : `${flat.slice(0, 30)}…`
+    const size = flat.length > 30 ? `（共 ${flat.length} 字）` : ''
+    return `- ${message.from}：${cut}${size}`
   }
 
   // Who wrote the batch. The API cannot carry a custom source on a prompt, but
@@ -311,7 +313,7 @@ export function apply(ctx) {
     const receiptLine = receipt === undefined || receipt === null
       ? null
       : `（你上一条已带回群，seq=${receipt.seq}）`
-    const lines = batch.slice(-5).map(previewLine)
+    const lines = batch.slice(-1).map(previewLine)
     let footer
     if (highlighted) {
       footer = `#${member.name} 被点名，请务必回。只回群里这一条，别顺手做历史里的活。`
@@ -803,6 +805,15 @@ export function apply(ctx) {
           current.members = [user ?? { kind: 'user', name: '我', lastReadSeq: 0 }, ...agents]
           void persist()
         }
+        // A rename nobody announces is one the member may never notice: it only
+        // learns its name when something calls it. The row is a system message,
+        // so it wakes no one.
+        for (const next of agents) {
+          const before = previous.get(next.sessionId)
+          if (before !== undefined && before.name !== next.name) {
+            appendSystem(`${before.name} 改名为「${next.name}」`)
+          }
+        }
         return json(res, 200, { ok: true, members: agents.length })
       }
       return json(res, 404, { error: `no route: ${method} ${path}` })
@@ -871,6 +882,8 @@ export function apply(ctx) {
           messages: { type: 'array' },
           lastSeq: { type: 'number' },
           truncatedBefore: { type: 'number' },
+          youAre: { type: 'string' },
+          cursorReset: { type: 'boolean' },
         },
         required: ['messages', 'lastSeq'],
       },
@@ -879,8 +892,14 @@ export function apply(ctx) {
           return [{ type: 'text', text: '群里没有新消息。' }]
         }
         const lines = value.messages.map((message) => `[seq=${message.seq}] ${message.from}：${message.text}`)
+        if (value.cursorReset === true) {
+          lines.unshift('（房间重建过，你的游标已经失效，已重置；下面是最近几条）')
+        }
         if (typeof value.truncatedBefore === 'number') {
           lines.unshift(`（早于 seq=${value.truncatedBefore} 的消息已被清理）`)
+        }
+        if (typeof value.youAre === 'string') {
+          lines.push(`（你在群里叫「${value.youAre}」）`)
         }
         return [{ type: 'text', text: lines.join('\n') }]
       },
@@ -898,13 +917,31 @@ export function apply(ctx) {
       const before = Number(args?.before)
       if (Number.isFinite(before)) {
         const older = all.filter((message) => message.seq < before)
+        // A tool result must be lossless JSON: an `undefined` value here fails
+        // the whole output, which is what broke this branch.
+        const truncated = db.earliestSeq > 1 && before <= db.earliestSeq ? db.earliestSeq : undefined
         return {
           messages: publicMessages(older.slice(Math.max(0, older.length - limit))),
           lastSeq: db.seq,
-          truncatedBefore: db.earliestSeq > 1 && before <= db.earliestSeq ? db.earliestSeq : undefined,
+          youAre: member.name,
+          ...(truncated === undefined ? {} : { truncatedBefore: truncated }),
         }
       }
       const from = Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0
+      // A cursor ahead of the log means the room was rebuilt or cleaned while
+      // this member slept. Left alone it makes every future read answer "no new
+      // messages" while pointers keep ringing — a silent deafness.
+      if (from > db.seq) {
+        const recent = messages().slice(-limit)
+        member.lastReadSeq = recent.length > 0 ? recent[recent.length - 1].seq : Math.max(0, db.earliestSeq - 1)
+        void persist()
+        return {
+          messages: publicMessages(recent),
+          lastSeq: db.seq,
+          youAre: member.name,
+          cursorReset: true,
+        }
+      }
       const truncatedBefore = db.earliestSeq > 1 && from < db.earliestSeq - 1 ? db.earliestSeq : undefined
       const fresh = all.filter((message) => message.seq > from)
       const page = fresh.slice(0, limit)
@@ -915,6 +952,7 @@ export function apply(ctx) {
       return {
         messages: publicMessages(page),
         lastSeq: db.seq,
+        youAre: member.name,
         ...(truncatedBefore === undefined ? {} : { truncatedBefore }),
       }
     },
@@ -954,10 +992,34 @@ export function apply(ctx) {
 
   // ------------------------------------------------------------------ wire
 
+  // A tool result must be lossless JSON; one stray `undefined` rejects the whole
+  // output. Strip them once here instead of trusting every branch to remember.
+  function cleanValue(value) {
+    if (Array.isArray(value)) return value.map(cleanValue)
+    if (value !== null && typeof value === 'object') {
+      const out = {}
+      for (const [key, item] of Object.entries(value)) {
+        if (item !== undefined) out[key] = cleanValue(item)
+      }
+      return out
+    }
+    return value
+  }
+
+  function withCleanResult(tool) {
+    const run = tool.execute
+    return {
+      ...tool,
+      async execute(args, exec) {
+        return cleanValue(await run(args, exec))
+      },
+    }
+  }
+
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/rooms', handler: route }))
-  ctx.effect(() => ctx.tools.register(sayTool))
-  ctx.effect(() => ctx.tools.register(readTool))
-  ctx.effect(() => ctx.tools.register(ackTool))
+  ctx.effect(() => ctx.tools.register(withCleanResult(sayTool)))
+  ctx.effect(() => ctx.tools.register(withCleanResult(readTool)))
+  ctx.effect(() => ctx.tools.register(withCleanResult(ackTool)))
   ctx.effect(() => () => {
     if (windowTimer !== null) clearTimeout(windowTimer)
     windowTimer = null

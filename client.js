@@ -110,7 +110,7 @@ window.__ModuleLoader__.load({
         h('circle', { cx: 12.5, cy: 15, r: 1.2, fill: active ? 'currentColor' : 'currentColor' }),
         h('circle', { cx: 16.5, cy: 15, r: 1.2, fill: active ? 'currentColor' : 'currentColor' })
       ),
-      unread > 0 && h('span', {
+      unread > 0 && !active && h('span', {
         title: `${unread} 条未读`,
         style: {
           position: 'absolute', top: -3, right: -3, minWidth: 8, height: 8, borderRadius: 4,
