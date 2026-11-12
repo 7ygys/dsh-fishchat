@@ -218,7 +218,7 @@ window.__ModuleLoader__.load({
     function MemberPicker({ status, onClose, onSaved }) {
       const [items, setItems] = useState([])
       const [error, setError] = useState(null)
-      const [selected, setSelected] = useState({}) // sessionId -> name
+      const [selected, setSelected] = useState({}) // sessionId -> { name, active }
       const [busy, setBusy] = useState(false)
 
       useEffect(() => {
@@ -229,7 +229,9 @@ window.__ModuleLoader__.load({
             setItems(data.items ?? [])
             const preload = {}
             for (const member of (status?.members ?? [])) {
-              if (member.kind === 'agent') preload[member.sessionId] = member.name
+              if (member.kind === 'agent') {
+                preload[member.sessionId] = { name: member.name, active: member.active !== false }
+              }
             }
             setSelected(preload)
           })
@@ -246,19 +248,27 @@ window.__ModuleLoader__.load({
           }
           if (Object.keys(next).length >= 3) return next
           const short = String(item.title ?? item.cwd ?? '成员').replace(/[（(【\[].*$/, '').trim()
-          next[item.sessionId] = (short || '成员').slice(0, 4)
+          next[item.sessionId] = { name: (short || '成员').slice(0, 4), active: true }
           return next
         })
       }
 
       const rename = (sessionId, value) => {
-        setSelected((current) => ({ ...current, [sessionId]: value }))
+        setSelected((current) => ({ ...current, [sessionId]: { ...current[sessionId], name: value } }))
+      }
+
+      const setActive = (sessionId, value) => {
+        setSelected((current) => ({ ...current, [sessionId]: { ...current[sessionId], active: value } }))
       }
 
       const save = async () => {
         setBusy(true)
         try {
-          const members = Object.entries(selected).map(([sessionId, name]) => ({ sessionId, name: name.trim() || '成员' }))
+          const members = Object.entries(selected).map(([sessionId, entry]) => ({
+            sessionId,
+            name: entry.name.trim() || '成员',
+            active: entry.active !== false,
+          }))
           await postJson(`${ROOM}/members`, { members })
           onSaved()
         } catch (error) {
@@ -292,18 +302,18 @@ window.__ModuleLoader__.load({
         error !== null && h('div', { style: { padding: 12, color: '#c0392b' } }, error),
         items.length === 0 && h('div', { style: { padding: 16, color: '#999' } }, '没有可选会话'),
         items.map((item) => {
-          const active = selected[item.sessionId] !== undefined
-          const disabled = item.member && !active
+          const picked = selected[item.sessionId] !== undefined
+          const disabled = item.member && !picked
           return h('div', {
             key: item.sessionId,
             onClick: () => { if (!disabled) toggle(item) },
             style: {
               padding: '9px 16px', borderBottom: '1px solid #f3f3f3', cursor: disabled ? 'default' : 'pointer',
-              background: active ? '#eef7ff' : 'transparent', opacity: disabled ? 0.45 : 1,
+              background: picked ? '#eef7ff' : 'transparent', opacity: disabled ? 0.45 : 1,
             },
           },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-            h('span', { style: { width: 16, color: '#2b7fd4' } }, active ? '☑' : '☐'),
+            h('span', { style: { width: 16, color: '#2b7fd4' } }, picked ? '☑' : '☐'),
             h('div', { style: { flex: 1, minWidth: 0 } },
               h('div', { style: { fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
                 item.title ?? '（无标题）'),
@@ -311,19 +321,30 @@ window.__ModuleLoader__.load({
                 `${item.cwd ?? ''} · ${timeLabel(item.updatedAt ?? Date.now())}${item.running ? ' · 正在跑' : ''}`)
             )
           ),
-          active && h('div', { style: { marginTop: 6, marginLeft: 24, display: 'flex', alignItems: 'center', gap: 6 } },
+          picked && h('div', { style: { marginTop: 6, marginLeft: 24, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
             h('span', { style: { fontSize: 11, color: '#888', whiteSpace: 'nowrap' } }, '群里叫它'),
             h('input', {
-              value: selected[item.sessionId],
+              value: selected[item.sessionId].name,
               onClick: (event) => event.stopPropagation(),
               onChange: (event) => rename(item.sessionId, event.target.value),
               placeholder: '短一点，`#` 用它点名',
               autoFocus: true,
               style: {
-                width: 150, padding: '4px 8px', fontSize: 12,
+                width: 120, padding: '4px 8px', fontSize: 12,
                 border: '1px solid #b9d4ef', borderRadius: 4,
               },
-            })
+            }),
+            h('label', {
+              onClick: (event) => event.stopPropagation(),
+              style: { display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: '#666' },
+            },
+            h('input', {
+              type: 'checkbox',
+              checked: selected[item.sessionId].active !== false,
+              onChange: (event) => setActive(item.sessionId, event.target.checked),
+            }),
+            h('span', null, '活跃（不点名也叫醒）')
+            )
           )
           )
         })

@@ -132,7 +132,11 @@ export function apply(ctx) {
         receipts: room.receipts ?? {},
         inflight: room.inflight ?? {},
         consecutiveAgent: Number.isFinite(room.consecutiveAgent) ? room.consecutiveAgent : 0,
-        members: Array.isArray(room.members) ? room.members.filter((m) => m && typeof m.name === 'string') : [],
+        members: Array.isArray(room.members)
+          ? room.members
+            .filter((m) => m && typeof m.name === 'string')
+            .map((m) => (m.kind === 'agent' ? { ...m, active: m.active !== false } : m))
+          : [],
       }
       db2.messages[id] = Array.isArray(input.messages?.[id]) ? input.messages[id] : []
     }
@@ -318,13 +322,18 @@ export function apply(ctx) {
       ? null
       : `（你上一条已带回群，seq=${receipt.seq}）`
     const lines = batch.slice(-1).map(previewLine)
+    // Whether this batch is a hand-off (someone wrote `#name`) or just chatter
+    // decides how much the woken member is expected to say.
+    const workBatch = batch.some((message) => message.kind !== 'system' && String(message.text ?? '').includes('#'))
     let footer
     if (highlighted) {
       footer = `#${member.name} 被点名，请务必回。只回群里这一条，别顺手做历史里的活。`
+    } else if (workBatch) {
+      footer = '这条是派给别人的活，你只是旁听。看看就好，不想回就调 room_ack()。'
     } else if (batch.some((message) => message.kind !== 'user')) {
       footer = '这是群里的旁听内容，不是你被派的活。看看就好，不想回就调 room_ack()。'
     } else {
-      footer = '想接话就正常回答（会自动带回群里）；不想接话就调 room_ack()。'
+      footer = '这是闲聊：回短一点，一两句就够；不想接就调 room_ack()。'
     }
     return [head, originLine(batch), receiptLine, ...lines, footer].filter((line) => line !== null).join('\n')
   }
@@ -354,7 +363,9 @@ export function apply(ctx) {
     if (batch.length === 0) return
     const normalized = batch.map((message) => String(message.text ?? '').normalize('NFKC')).join('\n')
     const named = agentMembers().filter((member) => mentions(normalized, member.name))
-    const targets = named.length > 0 ? named : agentMembers()
+    // An explicit `#name` reaches that member whether or not it is active.
+    // Without one, only the ACTIVE members hear the room.
+    const targets = named.length > 0 ? named : agentMembers().filter((member) => member.active !== false)
     for (const member of targets) {
       await deliverTo(member, batch, mentions(normalized, member.name))
     }
@@ -400,7 +411,7 @@ export function apply(ctx) {
     void deliverAgentMessage(message)
   }
 
-  async function deliverTo(member, batch, highlighted) {
+  async function deliverTo(member, batch, highlighted, handoffDepth = 0) {
     // Already waiting on a turn for this member. Do not drop the message: the
     // queued pointer cannot carry it (it was never sent), so remember the seq
     // and re-deliver once that turn settles.
@@ -436,7 +447,7 @@ export function apply(ctx) {
       appendSystem(`${member.name} 没有响应（${shortError(error)}）`)
       return
     }
-    const record = { requestId, cursorBefore, startedAt, sawRunning: false, memberName: member.name }
+    const record = { requestId, cursorBefore, startedAt, sawRunning: false, memberName: member.name, batch, handoffDepth: handoffDepth ?? 0 }
     deliveries.set(member.sessionId, record)
     const current = room()
     if (current !== undefined) {
@@ -635,6 +646,7 @@ export function apply(ctx) {
         kind: 'agent',
         name: member.name,
         sessionId: member.sessionId,
+        active: member.active !== false,
         unread: unreadCount(member),
         live,
         running: state?.running === true,
@@ -799,6 +811,8 @@ export function apply(ctx) {
               kind: 'agent',
               name,
               sessionId: entry.sessionId,
+              // Ticked = hears every message; unticked = only an explicit `#name`.
+              active: typeof entry.active === 'boolean' ? entry.active : before?.active !== false,
               // Renaming must not rewind a member's cursor: that would make it
               // read the whole history again.
               lastReadSeq: Number.isFinite(before?.lastReadSeq) ? before.lastReadSeq : 0,
@@ -991,6 +1005,15 @@ export function apply(ctx) {
         void persist()
       }
       runtime.set(member.sessionId, { ...(runtime.get(member.sessionId) ?? {}), lastAckAt: Date.now() })
+      // "Read it, not mine" should not leave the user waiting on nobody: pass
+      // the same batch to the other active members, once.
+      const record = deliveries.get(member.sessionId)
+      if (record !== undefined && record.handoffDepth === 0 && Array.isArray(record.batch)) {
+        const others = agentMembers().filter((other) => other.active !== false && other.sessionId !== member.sessionId)
+        for (const other of others) {
+          void deliverTo(other, record.batch, false, 1)
+        }
+      }
       return { acked: true }
     },
   }
