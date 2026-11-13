@@ -376,10 +376,10 @@ export function apply(ctx) {
       ? null
       : `（你上一条已带回群，seq=${receipt.seq}）`
     // The three questions a woken member should not have to work out itself.
-    const mustLine = mode === 'work' && highlighted
+    const mustLine = highlighted
       ? '回不回：必须回'
       : mode === 'attention'
-        ? '回不回：有人找你，可不回，自己判断'
+        ? '回不回：别人被 ¥ 点名了，你看到了，回不回自己判断'
         : '回不回：可不回，自己判断'
     const alsoLine = Array.isArray(alsoNames) && alsoNames.length > 0
       ? `也在回：${alsoNames.length} 个人`
@@ -391,8 +391,10 @@ export function apply(ctx) {
       footer = `#${member.name} 被点名。只回群里这一条，别顺手做历史里的活。`
     } else if (mode === 'work') {
       footer = '这条是派给别人的活，你只是旁听；不想回就调 room_ack()。'
+    } else if (mode === 'attention' && highlighted) {
+      footer = '¥ 有人点名要你回，但没说是不是活。回一句就行，不用展开。'
     } else if (mode === 'attention') {
-      footer = '¥ 有人提到你，不一定是派活。想接就接一句，不想回就 room_ack()。'
+      footer = '这是广播，有人被 ¥ 点名要回。你看着办，回短一点。'
     } else {
       footer = '闲聊：回短一点，一两句就够；不想回就调 room_ack()。'
     }
@@ -420,30 +422,32 @@ export function apply(ctx) {
   // User messages: a `#name` narrows the delivery to the named members (work
   // mode); otherwise everyone hears it (chat mode).
   // Who hears this batch, and in what capacity.
-  //   `#name`  → work hand-off: only the named members, and they must reply.
-  //   `¥name`  → attention: only the named members, reply is optional.
-  //   neither  → everyone active hears it, reply is optional.
+  //   `#name`  → work hand-off: ONLY the named members are woken, and must reply.
+  //   `¥name`  → broadcast: everyone active hears it, only the named must reply.
+  //   neither  → broadcast: everyone active hears it, reply is optional.
   function classifyBatch(normalized, senderName) {
     const pool = agentMembers().filter((member) => member.name !== senderName)
+    const active = pool.filter((member) => member.active !== false)
     const work = pool.filter((member) => mentions(normalized, member.name))
     const attention = pool.filter((member) => attentionMentions(normalized, member.name))
-    if (work.length > 0) return { mode: 'work', targets: work, work }
-    if (attention.length > 0) return { mode: 'attention', targets: attention, work }
-    return { mode: 'chat', targets: pool.filter((member) => member.active !== false), work }
+    if (work.length > 0) return { mode: 'work', targets: work, work, attention }
+    if (attention.length > 0) return { mode: 'attention', targets: active, work, attention }
+    return { mode: 'chat', targets: active, work, attention }
   }
 
   async function deliverBatch(batch, normalized, senderName) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
-    const { mode, targets, work } = classifyBatch(normalized, senderName)
+    const { mode, targets, work, attention } = classifyBatch(normalized, senderName)
     if (targets.length === 0) return
     const targetNames = targets.map((member) => member.name)
     for (const member of targets) {
-      const highlighted = mode === 'work' && work.some((candidate) => candidate.sessionId === member.sessionId)
+      const called = (mode === 'work' ? work : mode === 'attention' ? attention : [])
+        .some((candidate) => candidate.sessionId === member.sessionId)
       await deliverTo(
         member,
         batch,
-        highlighted,
+        called,
         0,
         targetNames.filter((name) => name !== member.name),
         mode,
@@ -986,7 +990,7 @@ export function apply(ctx) {
 
   const sayTool = {
     name: 'room_say',
-    description: '往「群」里说一句话。群是你和用户、以及别的 agent 共用的聊天室。你在自己会话里的正常回答会自动被带回群里，所以只有想额外补一句、或主动开口时才用它。用符号叫人：`#名字` = 派活（对方必须回），`¥名字` = 只是叫一声（对方自己判断要不要回）；两个都可以一次点多个，比如 `#灯后 #散樱` 或 `¥灯前`。不带符号 = 所有人都能看到，回不回各自判断。',
+    description: '往「群」里说一句话。群是你和用户、以及别的 agent 共用的聊天室。你在自己会话里的正常回答会自动被带回群里，所以只有想额外补一句、或主动开口时才用它。用符号叫人：`#名字` = 派活（只叫被点名的，必须回），`¥名字` = 点到为止（所有人都收到，但被点名的必须回）；两个都可以一次点多个。不带符号 = 广播给所有人，回不回各自判断。',
     parameters: {
       type: 'object',
       properties: {
