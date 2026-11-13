@@ -95,6 +95,7 @@ export function apply(ctx) {
   let windowTimer = null
   let windowFromSeq = 0
   let windowOpenedAt = 0
+  let recoverRetryTimer = null
 
   // ---------------------------------------------------------------- storage
 
@@ -136,7 +137,16 @@ export function apply(ctx) {
         members: Array.isArray(room.members)
           ? room.members
             .filter((m) => m && typeof m.name === 'string')
-            .map((m) => (m.kind === 'agent' ? { ...m, active: m.active !== false } : m))
+            .map((m) => (m.kind === 'agent'
+            ? {
+              ...m,
+              active: m.active !== false,
+              // Highest seq this member has SEEN, by any read mode. `lastReadSeq`
+              // is the "give me the next ones" cursor; this one only exists so a
+              // re-read cannot make an old batch look unread.
+              lastSeenSeq: Number.isFinite(m.lastSeenSeq) ? m.lastSeenSeq : 0,
+            }
+            : m))
           : [],
       }
       db2.messages[id] = Array.isArray(input.messages?.[id]) ? input.messages[id] : []
@@ -426,6 +436,11 @@ export function apply(ctx) {
   }
 
   async function deliverTo(member, batch, highlighted, handoffDepth = 0, alsoNames) {
+    // Already read past this batch (an ack or a read moved the cursor forward).
+    // Delivering it again is exactly the "same message twice" bug.
+    const lastSeqOfBatch = batch[batch.length - 1].seq
+    if (Number.isFinite(member.lastReadSeq) && member.lastReadSeq >= lastSeqOfBatch) return
+    if (Number.isFinite(member.lastSeenSeq) && member.lastSeenSeq >= lastSeqOfBatch) return
     // Already waiting on a turn for this member. Do not drop the message: the
     // queued pointer cannot carry it (it was never sent), so remember the seq
     // and re-deliver once that turn settles.
@@ -897,6 +912,17 @@ export function apply(ctx) {
     return memberBySession(sessionId)
   }
 
+  // Remember the highest seq this member has actually seen, whatever read mode
+  // produced it. A later delivery of the same batch must not look "new".
+  function touchSeen(member, page) {
+    if (!Array.isArray(page) || page.length === 0) return
+    const highest = page[page.length - 1].seq
+    if (!Number.isFinite(member.lastSeenSeq) || member.lastSeenSeq < highest) {
+      member.lastSeenSeq = highest
+      void persist()
+    }
+  }
+
   const sayTool = {
     name: 'room_say',
     description: '往「群」里说一句话。群是你和用户、以及另一个 agent 共用的聊天室。平时不必调用它——你在自己会话里的正常回答会自动被带回群里；只有想额外补一句、或者主动开口时才用它。想专门找某个人（叫醒它），就在正文里写 #名字；可以一次点多个，比如 `#灯 #散樱 你们俩看一下`。',
@@ -979,16 +1005,20 @@ export function apply(ctx) {
       const all = messages()
       const after = Number(args?.after)
       if (Number.isFinite(after)) {
-        return { messages: publicMessages(all.filter((message) => message.seq > after).slice(0, limit)), lastSeq: db.seq }
+        const page = all.filter((message) => message.seq > after).slice(0, limit)
+        touchSeen(member, page)
+        return { messages: publicMessages(page), lastSeq: db.seq }
       }
       const before = Number(args?.before)
       if (Number.isFinite(before)) {
         const older = all.filter((message) => message.seq < before)
+        const page = older.slice(Math.max(0, older.length - limit))
+        touchSeen(member, page)
         // A tool result must be lossless JSON: an `undefined` value here fails
         // the whole output, which is what broke this branch.
         const truncated = db.earliestSeq > 1 && before <= db.earliestSeq ? db.earliestSeq : undefined
         return {
-          messages: publicMessages(older.slice(Math.max(0, older.length - limit))),
+          messages: publicMessages(page),
           lastSeq: db.seq,
           youAre: member.name,
           ...(truncated === undefined ? {} : { truncatedBefore: truncated }),
@@ -1001,6 +1031,7 @@ export function apply(ctx) {
       if (from > db.seq) {
         const recent = messages().slice(-limit)
         member.lastReadSeq = recent.length > 0 ? recent[recent.length - 1].seq : Math.max(0, db.earliestSeq - 1)
+        touchSeen(member, recent)
         void persist()
         return {
           messages: publicMessages(recent),
@@ -1014,6 +1045,7 @@ export function apply(ctx) {
       const page = fresh.slice(0, limit)
       if (page.length > 0) {
         member.lastReadSeq = page[page.length - 1].seq
+        touchSeen(member, page)
         void persist()
       }
       return {
@@ -1043,6 +1075,15 @@ export function apply(ctx) {
     async execute(args, exec) {
       const member = callerMember(exec)
       if (member === undefined) throw new Error('你不在任何群里，不能使用 room_ack。')
+      const record = deliveries.get(member.sessionId)
+      // "Read it, not mine" still means READ: advance the cursor to the end of
+      // this batch, or the same message stays "unread" and gets delivered again.
+      if (record !== undefined && Array.isArray(record.batch) && record.batch.length > 0) {
+        const lastSeq = record.batch[record.batch.length - 1].seq
+        if (!Number.isFinite(member.lastReadSeq) || member.lastReadSeq < lastSeq) {
+          member.lastReadSeq = lastSeq
+        }
+      }
       const current = room()
       if (current !== undefined) {
         current.acks[member.name] = {
@@ -1053,10 +1094,9 @@ export function apply(ctx) {
         void persist()
       }
       runtime.set(member.sessionId, { ...(runtime.get(member.sessionId) ?? {}), lastAckAt: Date.now() })
+      markWake(record?.requestId, 'acked')
       // "Read it, not mine" should not leave the user waiting on nobody: pass
       // the same batch to the other active members, once.
-      const record = deliveries.get(member.sessionId)
-      markWake(record?.requestId, 'acked')
       if (record !== undefined && record.handoffDepth === 0 && Array.isArray(record.batch)) {
         const others = agentMembers().filter((other) => other.active !== false && other.sessionId !== member.sessionId)
         for (const other of others) {
@@ -1100,6 +1140,8 @@ export function apply(ctx) {
   ctx.effect(() => () => {
     if (windowTimer !== null) clearTimeout(windowTimer)
     windowTimer = null
+    if (recoverRetryTimer !== null) clearTimeout(recoverRetryTimer)
+    recoverRetryTimer = null
   })
 
   // A reload during a turn would otherwise lose that turn's answer: pick up the
@@ -1112,6 +1154,7 @@ export function apply(ctx) {
   async function recoverInflight() {
     const current = room()
     if (current?.inflight === undefined || Object.keys(current.inflight).length === 0) return
+    let stillRunning = false
     for (const [sessionId, item] of Object.entries(current.inflight)) {
       const member = agentMembers().find((candidate) => candidate.sessionId === sessionId)
       if (member === undefined) {
@@ -1124,7 +1167,12 @@ export function apply(ctx) {
       } catch {
         state = null
       }
-      if (state?.running === true) continue
+      if (state?.running === true) {
+        // Still mid-turn: keep the record and check again instead of dropping
+        // the answer this turn is about to produce.
+        stillRunning = true
+        continue
+      }
       try {
         await harvest(member, {
           requestId: item.requestId,
@@ -1139,6 +1187,12 @@ export function apply(ctx) {
       delete current.inflight[sessionId]
     }
     void persist()
+    if (stillRunning && recoverRetryTimer === null) {
+      recoverRetryTimer = setTimeout(() => {
+        recoverRetryTimer = null
+        void recoverInflight()
+      }, 30000)
+    }
   }
 
   ctx.logger?.info?.(`rooms: ready, ${agentMembers().length} agent member(s), ${messages().length} message(s)`)
