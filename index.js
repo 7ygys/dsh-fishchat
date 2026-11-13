@@ -496,6 +496,10 @@ export function apply(ctx) {
   }
 
   async function deliverTo(member, batch, highlighted, handoffDepth = 0, alsoNames, mode = 'chat') {
+    // Last line of defence: whatever path produced this batch, a member is never
+    // woken by its own message. Filtering at each caller missed one.
+    batch = batch.filter((message) => message.from !== member.name)
+    if (batch.length === 0) return
     // Already read past this batch (an ack or a read moved the cursor forward).
     // Delivering it again is exactly the "same message twice" bug.
     const lastSeqOfBatch = batch[batch.length - 1].seq
