@@ -29,6 +29,8 @@ const WATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000
 const LONG_TURN_NOTICE_MS = 10 * 60 * 1000
 const POINTER_PREFIX = 'room-'
 const AGENT_HORN_EVERY = 20
+// How many missed messages one pointer may ask a member to catch up on.
+const BACKFILL_MAX = 12
 // A bare acknowledgement answered in words is not worth a bubble. `room_ack`
 // is the supported way to say it; this only catches the model's habit.
 const CONFIRM_ONLY = /^(看过了|收到|明白了?|已读|了解|收到啦|知道了|看见了)[。.!！~～…\s]*$/
@@ -333,6 +335,36 @@ export function apply(ctx) {
     return `发起者：${names.join('、')}`
   }
 
+  // A member can miss messages because `#` / `¥` only ring the named ones. Tell
+  // it what to catch up on: at most 12, and never crossing into yesterday.
+  // Anything older gets no hint — that is left to the user to point out.
+  function backfillLine(member, beforeSeq) {
+    const seen = Math.max(
+      Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0,
+      Number.isFinite(member.lastSeenSeq) ? member.lastSeenSeq : 0,
+    )
+    const from = seen + 1
+    const to = beforeSeq - 1
+    if (to < from) return null
+    const dayStart = new Date().setHours(0, 0, 0, 0)
+    // Your own messages are not "missed": counting them would tell a member it
+    // failed to read the thing it just said.
+    const missed = messages().filter((message) => message.kind !== 'system'
+      && message.from !== member.name
+      && message.seq >= from
+      && message.seq <= to)
+    if (missed.length === 0) return null
+    const today = missed.filter((message) => message.at >= dayStart)
+    if (today.length === 0) return null
+    const shown = today.length <= BACKFILL_MAX ? today : today.slice(-BACKFILL_MAX)
+    const first = shown[0].seq
+    const last = shown[shown.length - 1].seq
+    const range = first === last ? `seq ${first}` : `seq ${first}..${last}`
+    const omitted = missed.length - shown.length
+    if (omitted === 0) return `补读：你落了 ${shown.length} 条（${range}），room_read() 能一次捞到`
+    return `补读：你落了 ${missed.length} 条，但只看 ${range} 这 ${shown.length} 条就够；更早的（含昨天的）不用管`
+  }
+
   function pointerText(member, batch, highlighted, alsoNames, mode = 'chat') {
     const first = batch[0]
     const last = batch[batch.length - 1]
@@ -353,6 +385,7 @@ export function apply(ctx) {
       ? `也在回：${alsoNames.length} 个人`
       : null
     const lines = batch.slice(-1).map(previewLine)
+    const backfill = backfillLine(member, first.seq)
     let footer
     if (mode === 'work' && highlighted) {
       footer = `#${member.name} 被点名。只回群里这一条，别顺手做历史里的活。`
@@ -363,7 +396,7 @@ export function apply(ctx) {
     } else {
       footer = '闲聊：回短一点，一两句就够；不想回就调 room_ack()。'
     }
-    return [head, originLine(batch), mustLine, alsoLine, receiptLine, ...lines, footer]
+    return [head, originLine(batch), mustLine, alsoLine, backfill, receiptLine, ...lines, footer]
       .filter((line) => line !== null)
       .join('\n')
   }
