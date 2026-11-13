@@ -619,8 +619,12 @@ export function apply(ctx) {
         && message.from !== member.name)
       if (fresh.length > 0) {
         const normalized = fresh.map((message) => String(message.text ?? '').normalize('NFKC')).join('\n')
-        const mode = mentions(normalized, member.name) ? 'work' : 'chat'
-        void deliverTo(member, fresh.slice(-5), mentions(normalized, member.name), 0, undefined, mode)
+        // `#` means work — it must keep that meaning on every path, including
+        // this catch-up one. `¥` only means "you were called".
+        const workHit = mentions(normalized, member.name)
+        const attentionHit = workHit ? false : attentionMentions(normalized, member.name)
+        const mode = workHit ? 'work' : attentionHit ? 'attention' : 'chat'
+        void deliverTo(member, fresh.slice(-5), workHit || attentionHit, 0, undefined, mode)
       }
     }
   }
