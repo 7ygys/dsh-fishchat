@@ -131,6 +131,7 @@ export function apply(ctx) {
         acks: room.acks ?? {},
         receipts: room.receipts ?? {},
         inflight: room.inflight ?? {},
+        wakeLog: Array.isArray(room.wakeLog) ? room.wakeLog : [],
         consecutiveAgent: Number.isFinite(room.consecutiveAgent) ? room.consecutiveAgent : 0,
         members: Array.isArray(room.members)
           ? room.members
@@ -312,30 +313,36 @@ export function apply(ctx) {
     return `发起者：${names.join('、')}`
   }
 
-  function pointerText(member, batch, highlighted) {
+  function pointerText(member, batch, highlighted, alsoNames) {
     const first = batch[0]
     const last = batch[batch.length - 1]
     const range = first.seq === last.seq ? `seq ${first.seq}` : `seq ${first.seq}..${last.seq}`
-    const head = `【${room()?.title ?? '群'}】${batch.length} 条新消息（${range}）`
+    // Whether this batch is a hand-off (someone wrote `#name`) or just chatter.
+    const workBatch = batch.some((message) => message.kind !== 'system' && String(message.text ?? '').includes('#'))
+    const head = `【${room()?.title ?? '群'}】${batch.length} 条新消息（${range}）· ${workBatch ? '派活' : '闲聊'}`
     const receipt = room()?.receipts?.[member.name]
     const receiptLine = receipt === undefined || receipt === null
       ? null
       : `（你上一条已带回群，seq=${receipt.seq}）`
+    // The three questions a woken member should not have to work out itself.
+    const mustLine = highlighted ? '回不回：必须回' : '回不回：不用回也行'
+    const alsoLine = Array.isArray(alsoNames) && alsoNames.length > 0
+      ? `也在回：${alsoNames.join('、')}`
+      : null
     const lines = batch.slice(-1).map(previewLine)
-    // Whether this batch is a hand-off (someone wrote `#name`) or just chatter
-    // decides how much the woken member is expected to say.
-    const workBatch = batch.some((message) => message.kind !== 'system' && String(message.text ?? '').includes('#'))
     let footer
     if (highlighted) {
-      footer = `#${member.name} 被点名，请务必回。只回群里这一条，别顺手做历史里的活。`
+      footer = `#${member.name} 被点名。只回群里这一条，别顺手做历史里的活。`
     } else if (workBatch) {
-      footer = '这条是派给别人的活，你只是旁听。看看就好，不想回就调 room_ack()。'
+      footer = '这条是派给别人的活，你只是旁听；不想回就调 room_ack()。'
     } else if (batch.some((message) => message.kind !== 'user')) {
-      footer = '这是群里的旁听内容，不是你被派的活。看看就好，不想回就调 room_ack()。'
+      footer = '旁听内容，不是你被派的活；不想回就调 room_ack()。'
     } else {
-      footer = '这是闲聊：回短一点，一两句就够；不想接就调 room_ack()。'
+      footer = '闲聊：回短一点，一两句就够。'
     }
-    return [head, originLine(batch), receiptLine, ...lines, footer].filter((line) => line !== null).join('\n')
+    return [head, originLine(batch), mustLine, alsoLine, receiptLine, ...lines, footer]
+      .filter((line) => line !== null)
+      .join('\n')
   }
 
   function scheduleDeliveryWindow(message) {
@@ -366,8 +373,15 @@ export function apply(ctx) {
     // An explicit `#name` reaches that member whether or not it is active.
     // Without one, only the ACTIVE members hear the room.
     const targets = named.length > 0 ? named : agentMembers().filter((member) => member.active !== false)
+    const targetNames = targets.map((member) => member.name)
     for (const member of targets) {
-      await deliverTo(member, batch, mentions(normalized, member.name))
+      await deliverTo(
+        member,
+        batch,
+        mentions(normalized, member.name),
+        0,
+        targetNames.filter((name) => name !== member.name),
+      )
     }
   }
 
@@ -411,7 +425,7 @@ export function apply(ctx) {
     void deliverAgentMessage(message)
   }
 
-  async function deliverTo(member, batch, highlighted, handoffDepth = 0) {
+  async function deliverTo(member, batch, highlighted, handoffDepth = 0, alsoNames) {
     // Already waiting on a turn for this member. Do not drop the message: the
     // queued pointer cannot carry it (it was never sent), so remember the seq
     // and re-deliver once that turn settles.
@@ -441,7 +455,7 @@ export function apply(ctx) {
         requestId,
         sessionId: member.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: pointerText(member, batch, highlighted) }],
+        content: [{ type: 'text', text: pointerText(member, batch, highlighted, alsoNames) }],
       }, AbortSignal.timeout(15000))
     } catch (error) {
       appendSystem(`${member.name} 没有响应（${shortError(error)}）`)
@@ -453,6 +467,18 @@ export function apply(ctx) {
     if (current !== undefined) {
       // Persisted so a plugin reload mid-turn does not orphan the answer.
       current.inflight[member.sessionId] = { requestId, cursorBefore, startedAt, memberName: member.name }
+      // A wake leaves a trace nobody has to be woken for: not a message, not
+      // unread, never in room_read. It only exists to reconcile "called" with
+      // "actually said something".
+      current.wakeLog.push({
+        at: startedAt,
+        requestId,
+        member: member.name,
+        seqFrom: batch[0].seq,
+        seqTo: batch[batch.length - 1].seq,
+        state: 'called',
+      })
+      if (current.wakeLog.length > 200) current.wakeLog.splice(0, current.wakeLog.length - 200)
       void persist()
     }
     setMemberStatus(member.name, { activity: 'thinking' })
@@ -515,14 +541,28 @@ export function apply(ctx) {
     }
   }
 
-  function commitHarvest(member, text) {
-    if (CONFIRM_ONLY.test(text)) return
+  function markWake(requestId, state) {
+    if (typeof requestId !== 'string') return
+    const current = room()
+    const entry = (current?.wakeLog ?? []).find((item) => item.requestId === requestId)
+    if (entry === undefined) return
+    entry.state = state
+    entry.doneAt = Date.now()
+    void persist()
+  }
+
+  function commitHarvest(member, text, requestId) {
+    if (CONFIRM_ONLY.test(text)) {
+      markWake(requestId, 'silent')
+      return
+    }
     const message = appendMessage({ from: member.name, kind: 'agent', text, memberId: member.sessionId })
     const current = room()
     if (current !== undefined) {
       current.receipts[member.name] = { seq: message.seq, at: Date.now() }
       void persist()
     }
+    markWake(requestId, 'replied')
   }
 
   async function harvest(member, record) {
@@ -552,7 +592,7 @@ export function apply(ctx) {
         .filter((text) => text !== '')
       const text = texts[texts.length - 1]
       if (text === undefined) return
-      commitHarvest(member, text)
+      commitHarvest(member, text, record.requestId)
       return
     }
     // A long turn can push the pointer past the read window. Fall back to the
@@ -569,7 +609,7 @@ export function apply(ctx) {
       return
     }
     ctx.logger?.warn?.(`rooms: pointer for ${member.name} fell out of the window; harvested the last answer instead`)
-    commitHarvest(member, text)
+    commitHarvest(member, text, record.requestId)
   }
 
   function shortError(error) {
@@ -656,6 +696,8 @@ export function apply(ctx) {
     const ackEntries = Object.entries(current?.acks ?? {})
       .map(([member, value]) => ({ member, at: value?.at ?? 0, seq: value?.seq ?? 0 }))
       .sort((left, right) => right.at - left.at)
+    const dayStart = new Date().setHours(0, 0, 0, 0)
+    const todayWakes = (current?.wakeLog ?? []).filter((entry) => entry.at >= dayStart)
     return {
       room: {
         id: ROOM_ID,
@@ -669,6 +711,12 @@ export function apply(ctx) {
       members,
       lastAck: ackEntries[0] ?? null,
       receipts: current?.receipts ?? {},
+      wakeStats: {
+        called: todayWakes.length,
+        replied: todayWakes.filter((entry) => entry.state === 'replied').length,
+        acked: todayWakes.filter((entry) => entry.state === 'acked').length,
+      },
+      recentWakes: (current?.wakeLog ?? []).slice(-8),
     }
   }
 
@@ -1008,6 +1056,7 @@ export function apply(ctx) {
       // "Read it, not mine" should not leave the user waiting on nobody: pass
       // the same batch to the other active members, once.
       const record = deliveries.get(member.sessionId)
+      markWake(record?.requestId, 'acked')
       if (record !== undefined && record.handoffDepth === 0 && Array.isArray(record.batch)) {
         const others = agentMembers().filter((other) => other.active !== false && other.sessionId !== member.sessionId)
         for (const other of others) {

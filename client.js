@@ -536,6 +536,13 @@ window.__ModuleLoader__.load({
       ),
       h('div', { style: { flex: 1, fontSize: 12, color: '#7a7a7a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
         h(StatusText, { status })),
+      status?.wakeStats !== undefined && h('span', {
+        title: (status.recentWakes ?? []).map((entry) => {
+          const tail = entry.state === 'replied' ? '→ 回了' : entry.state === 'acked' ? '→ 说了看过了' : '→ 没说话'
+          return `${timeLabel(entry.at)} ${entry.member} 被叫醒（seq ${entry.seqFrom}）${tail}`
+        }).join('\n'),
+        style: { fontSize: 11, color: '#8a8a8a', whiteSpace: 'nowrap', cursor: 'default' },
+      }, `叫醒 ${status.wakeStats.called} · 回 ${status.wakeStats.replied}`),
       h('button', {
         onClick: () => setPicker(true),
         style: { padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid #d5d5d5', background: '#fff', cursor: 'pointer' },
