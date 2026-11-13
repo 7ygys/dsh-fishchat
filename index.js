@@ -1120,10 +1120,15 @@ export function apply(ctx) {
       markWake(record?.requestId, 'acked')
       // "Read it, not mine" should not leave the user waiting on nobody: pass
       // the same batch to the other active members, once.
+      // Hand along only a USER batch. Under the broadcast rule an agent message
+      // already reached everyone, so passing it on would just start a loop.
       if (record !== undefined && record.handoffDepth === 0 && Array.isArray(record.batch)) {
-        const others = agentMembers().filter((other) => other.active !== false && other.sessionId !== member.sessionId)
-        for (const other of others) {
-          void deliverTo(other, record.batch, false, 1)
+        const fromUser = record.batch.some((message) => message.kind === 'user')
+        if (fromUser) {
+          const others = agentMembers().filter((other) => other.active !== false && other.sessionId !== member.sessionId)
+          for (const other of others) {
+            void deliverTo(other, record.batch, false, 1)
+          }
         }
       }
       return { acked: true }
