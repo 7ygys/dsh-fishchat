@@ -615,7 +615,7 @@ window.__ModuleLoader__.load({
             void send()
           }
         },
-        placeholder: '说点什么…（用 #名字 派活 · Enter 发送 · Shift+Enter 换行）',
+        placeholder: '说点什么…（#名字 派活 · ¥名字 叫人 · Enter 发送）',
         rows: 1,
         style: {
           flex: 1, resize: 'none', minHeight: 38, maxHeight: 140, padding: '9px 11px', fontSize: 14,

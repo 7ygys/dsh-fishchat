@@ -77,11 +77,21 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-// `#name` counts only when it starts a token and the name ends the token,
-// so `#灯灯` never wakes `灯` and `abc#灯` never fires.
-function mentions(normalizedText, memberName) {
-  const pattern = new RegExp(`(^|[\\s\\p{P}])#${escapeRegExp(memberName)}($|[\\s\\p{P}])`, 'u')
+// Both symbols follow the same token rule: they must start a token and the name
+// must end it, so `#灯灯` never wakes `灯` and `abc#灯` never fires.
+function symbolMentions(normalizedText, symbol, memberName) {
+  const pattern = new RegExp(`(^|[\\s\\p{P}])${escapeRegExp(symbol)}${escapeRegExp(memberName)}($|[\\s\\p{P}])`, 'u')
   return pattern.test(normalizedText)
+}
+
+// `#name` = work hand-off. `¥name` = "someone is looking for you" (no work
+// implied). NFKC folds the full-width ￥ into ¥, so either input works.
+function mentions(normalizedText, memberName) {
+  return symbolMentions(normalizedText, '#', memberName)
+}
+
+function attentionMentions(normalizedText, memberName) {
+  return symbolMentions(normalizedText, '¥', memberName)
 }
 
 export function apply(ctx) {
@@ -323,32 +333,35 @@ export function apply(ctx) {
     return `发起者：${names.join('、')}`
   }
 
-  function pointerText(member, batch, highlighted, alsoNames) {
+  function pointerText(member, batch, highlighted, alsoNames, mode = 'chat') {
     const first = batch[0]
     const last = batch[batch.length - 1]
     const range = first.seq === last.seq ? `seq ${first.seq}` : `seq ${first.seq}..${last.seq}`
-    // Whether this batch is a hand-off (someone wrote `#name`) or just chatter.
-    const workBatch = batch.some((message) => message.kind !== 'system' && String(message.text ?? '').includes('#'))
-    const head = `【${room()?.title ?? '群'}】${batch.length} 条新消息（${range}）· ${workBatch ? '派活' : '闲聊'}`
+    const label = mode === 'work' ? '派活' : mode === 'attention' ? '特指' : '闲聊'
+    const head = `【${room()?.title ?? '群'}】${batch.length} 条新消息（${range}）· ${label}`
     const receipt = room()?.receipts?.[member.name]
     const receiptLine = receipt === undefined || receipt === null
       ? null
       : `（你上一条已带回群，seq=${receipt.seq}）`
     // The three questions a woken member should not have to work out itself.
-    const mustLine = highlighted ? '回不回：必须回' : '回不回：不用回也行'
+    const mustLine = mode === 'work' && highlighted
+      ? '回不回：必须回'
+      : mode === 'attention'
+        ? '回不回：有人找你，可不回，自己判断'
+        : '回不回：可不回，自己判断'
     const alsoLine = Array.isArray(alsoNames) && alsoNames.length > 0
       ? `也在回：${alsoNames.length} 个人`
       : null
     const lines = batch.slice(-1).map(previewLine)
     let footer
-    if (highlighted) {
+    if (mode === 'work' && highlighted) {
       footer = `#${member.name} 被点名。只回群里这一条，别顺手做历史里的活。`
-    } else if (workBatch) {
+    } else if (mode === 'work') {
       footer = '这条是派给别人的活，你只是旁听；不想回就调 room_ack()。'
-    } else if (batch.some((message) => message.kind !== 'user')) {
-      footer = '旁听内容，不是你被派的活；不想回就调 room_ack()。'
+    } else if (mode === 'attention') {
+      footer = '¥ 有人提到你，不一定是派活。想接就接一句，不想回就 room_ack()。'
     } else {
-      footer = '闲聊：回短一点，一两句就够。'
+      footer = '闲聊：回短一点，一两句就够；不想回就调 room_ack()。'
     }
     return [head, originLine(batch), mustLine, alsoLine, receiptLine, ...lines, footer]
       .filter((line) => line !== null)
@@ -373,45 +386,55 @@ export function apply(ctx) {
 
   // User messages: a `#name` narrows the delivery to the named members (work
   // mode); otherwise everyone hears it (chat mode).
+  // Who hears this batch, and in what capacity.
+  //   `#name`  → work hand-off: only the named members, and they must reply.
+  //   `¥name`  → attention: only the named members, reply is optional.
+  //   neither  → everyone active hears it, reply is optional.
+  function classifyBatch(normalized, senderName) {
+    const pool = agentMembers().filter((member) => member.name !== senderName)
+    const work = pool.filter((member) => mentions(normalized, member.name))
+    const attention = pool.filter((member) => attentionMentions(normalized, member.name))
+    if (work.length > 0) return { mode: 'work', targets: work, work }
+    if (attention.length > 0) return { mode: 'attention', targets: attention, work }
+    return { mode: 'chat', targets: pool.filter((member) => member.active !== false), work }
+  }
+
+  async function deliverBatch(batch, normalized, senderName) {
+    const current = room()
+    if (current === undefined || current.deleted || current.wakeEnabled === false) return
+    const { mode, targets, work } = classifyBatch(normalized, senderName)
+    if (targets.length === 0) return
+    const targetNames = targets.map((member) => member.name)
+    for (const member of targets) {
+      const highlighted = mode === 'work' && work.some((candidate) => candidate.sessionId === member.sessionId)
+      await deliverTo(
+        member,
+        batch,
+        highlighted,
+        0,
+        targetNames.filter((name) => name !== member.name),
+        mode,
+      )
+    }
+  }
+
   async function flushUserWindow(fromSeq) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
     const batch = messages().filter((message) => message.seq >= fromSeq && message.kind === 'user')
     if (batch.length === 0) return
     const normalized = batch.map((message) => String(message.text ?? '').normalize('NFKC')).join('\n')
-    const named = agentMembers().filter((member) => mentions(normalized, member.name))
-    // An explicit `#name` reaches that member whether or not it is active.
-    // Without one, only the ACTIVE members hear the room.
-    const targets = named.length > 0 ? named : agentMembers().filter((member) => member.active !== false)
-    const targetNames = targets.map((member) => member.name)
-    for (const member of targets) {
-      await deliverTo(
-        member,
-        batch,
-        mentions(normalized, member.name),
-        0,
-        targetNames.filter((name) => name !== member.name),
-      )
-    }
+    await deliverBatch(batch, normalized, undefined)
   }
 
-  // Agent messages never fan out on their own: without a `#name` they are just
-  // conversation, and waking every peer on every reply would loop with nobody
-  // left to stop it.
+  // Agent messages now fan out too: everyone visible, reply optional. The mute
+  // is the only brake, because a chain of "no one was named" replies can loop.
   async function deliverAgentMessage(message) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
-    // Muted: the message is stored and nothing is queued. Turning the mute off
-    // later never replays it — a quiet stretch stays quiet.
     if (current.muteAgentToAgent === true) return
     const normalized = String(message.text ?? '').normalize('NFKC')
-    // Never wake the sender: a message that names its own author would start a
-    // turn on the very session that just produced it.
-    const named = agentMembers().filter((member) => member.name !== message.from && mentions(normalized, member.name))
-    if (named.length === 0) return
-    for (const member of named) {
-      await deliverTo(member, [message], true)
-    }
+    await deliverBatch([message], normalized, message.from)
   }
 
   function routeMessage(message) {
@@ -435,7 +458,7 @@ export function apply(ctx) {
     void deliverAgentMessage(message)
   }
 
-  async function deliverTo(member, batch, highlighted, handoffDepth = 0, alsoNames) {
+  async function deliverTo(member, batch, highlighted, handoffDepth = 0, alsoNames, mode = 'chat') {
     // Already read past this batch (an ack or a read moved the cursor forward).
     // Delivering it again is exactly the "same message twice" bug.
     const lastSeqOfBatch = batch[batch.length - 1].seq
@@ -470,7 +493,7 @@ export function apply(ctx) {
         requestId,
         sessionId: member.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: pointerText(member, batch, highlighted, alsoNames) }],
+        content: [{ type: 'text', text: pointerText(member, batch, highlighted, alsoNames, mode) }],
       }, AbortSignal.timeout(15000))
     } catch (error) {
       appendSystem(`${member.name} 没有响应（${shortError(error)}）`)
@@ -925,7 +948,7 @@ export function apply(ctx) {
 
   const sayTool = {
     name: 'room_say',
-    description: '往「群」里说一句话。群是你和用户、以及另一个 agent 共用的聊天室。平时不必调用它——你在自己会话里的正常回答会自动被带回群里；只有想额外补一句、或者主动开口时才用它。想专门找某个人（叫醒它），就在正文里写 #名字；可以一次点多个，比如 `#灯 #散樱 你们俩看一下`。',
+    description: '往「群」里说一句话。群是你和用户、以及别的 agent 共用的聊天室。你在自己会话里的正常回答会自动被带回群里，所以只有想额外补一句、或主动开口时才用它。用符号叫人：`#名字` = 派活（对方必须回），`¥名字` = 只是叫一声（对方自己判断要不要回）；两个都可以一次点多个，比如 `#灯后 #散樱` 或 `¥灯前`。不带符号 = 所有人都能看到，回不回各自判断。',
     parameters: {
       type: 'object',
       properties: {
