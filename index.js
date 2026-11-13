@@ -571,10 +571,15 @@ export function apply(ctx) {
     const pending = pendingDelivery.get(member.sessionId)
     if (pending !== undefined) {
       pendingDelivery.delete(member.sessionId)
-      const fresh = messages().filter((message) => message.seq >= pending.fromSeq && message.kind !== 'system')
+      // Never re-deliver the member its own message: that is how a broadcast
+      // woke an agent with its own reply.
+      const fresh = messages().filter((message) => message.seq >= pending.fromSeq
+        && message.kind !== 'system'
+        && message.from !== member.name)
       if (fresh.length > 0) {
         const normalized = fresh.map((message) => String(message.text ?? '').normalize('NFKC')).join('\n')
-        void deliverTo(member, fresh.slice(-5), mentions(normalized, member.name))
+        const mode = mentions(normalized, member.name) ? 'work' : 'chat'
+        void deliverTo(member, fresh.slice(-5), mentions(normalized, member.name), 0, undefined, mode)
       }
     }
   }
