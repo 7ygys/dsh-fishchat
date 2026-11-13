@@ -307,3 +307,35 @@ lastAck = { member: 灯前, seq: 53 }   ← 它按了 room_ack，不是没收到
 - **可观测性弱**：投递失败、搬运错，界面看不到，只有 warn 日志。用户说等完善界面时再说。
 - **不活跃成员的可见性**：用户确认"每条消息每个 agent 都能看到，只是回不回自己判断"——现状已满足（游标不动，`room_read` 能拿到全部积压），没有代码改动。
 
+---
+
+## 实验 11 · 换信封：指针能不能不以 `user` 身份进入会话
+
+**2026-11-13 · 结论：不能。两条路都试过了，都堵。**
+
+灯后/灯前追问过两次的问题：指针冒充 `user` 进上下文、永久占位，能不能换成 `system` 或带 `source`。
+
+### 试法
+
+临时加了一个 `/rooms/r1/_probe` 路由（测完已删），建了个一次性会话
+`session-25e5f1a5-1a69-4ca3-a7be-fbb14c6254c7`，跑了三个变体：
+
+| 变体 | 做法 | 返回 | 日志里实际落下的 |
+|---|---|---|---|
+| `role` | `prompt({content:[{type:'text', text, role:'system'}]})` | `ok: true` | `role=user, source=user` —— **字段被静默忽略** |
+| `source` | `prompt({content:[{type:'text', text, source:{kind:'room'}}]})` | `ok: true` | `role=user, source=user` —— **同上** |
+| `followup` | `agent.followup({role:'developer', content, source})` | `ok: true` | **整条没落盘**，日志里找不到 |
+
+### 为什么这条比"报错"更坏
+
+三条都**不报错**。`prompt` 会把不认识的字段悄悄扔掉，返回成功——调用方会以为换了信封，其实没有。
+这正是灯后说的那种"看不出是坏了"。
+
+### 结论（可以结案）
+
+- **`session/prompt` 不支持改投递身份**（已验证：字段被丢）。
+- **`agent.followup` 走 developer 角色不落盘**（已验证：消息消失）。
+- 剩下的可能只有"surface replace"（把已写入的指针从历史里替换掉），那是另一套机制，没试，风险更高。
+
+**所以指针继续是 `user` 消息。** 这是可以写进"已定"的一栏：不是没试，是试了不通。
+

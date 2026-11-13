@@ -327,7 +327,7 @@ export function apply(ctx) {
     // The three questions a woken member should not have to work out itself.
     const mustLine = highlighted ? '回不回：必须回' : '回不回：不用回也行'
     const alsoLine = Array.isArray(alsoNames) && alsoNames.length > 0
-      ? `也在回：${alsoNames.join('、')}`
+      ? `也在回：${alsoNames.length} 个人`
       : null
     const lines = batch.slice(-1).map(previewLine)
     let footer
