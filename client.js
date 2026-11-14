@@ -189,7 +189,7 @@ window.__ModuleLoader__.load({
         }, name),
         h('div', {
           style: {
-            background: mine ? '#95ec69' : '#ffffff',
+            background: mine ? '#95ec69' : '#f2f2f2',
             // On the green bubble the theme's primary label can be white, which
             // disappears; the bubble keeps its own ink.
             color: mine ? '#1a1a1a' : 'var(--dsw-alias-label-primary)',
