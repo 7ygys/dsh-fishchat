@@ -370,7 +370,10 @@ export function apply(ctx) {
     const last = batch[batch.length - 1]
     const range = first.seq === last.seq ? `seq ${first.seq}` : `seq ${first.seq}..${last.seq}`
     const label = mode === 'work' ? '派活' : mode === 'attention' ? '特指' : '闲聊'
-    const head = `【${room()?.title ?? '群'}】${batch.length} 条新消息（${range}）· ${label}`
+    // `prompt` can only arrive as a user message, so the body has to say so.
+    // Anything not authored by the user is a hand-off, marked 转述 up front.
+    const forged = batch.some((message) => message.kind !== 'user')
+    const head = `【${room()?.title ?? '群'}】${batch.length} 条新消息（${range}）· ${label}${forged ? '（转述）' : ''}`
     const receipt = room()?.receipts?.[member.name]
     const receiptLine = receipt === undefined || receipt === null
       ? null
@@ -398,7 +401,7 @@ export function apply(ctx) {
     } else {
       footer = '闲聊：回短一点，一两句就够；不想回就调 room_ack()。'
     }
-    return [head, originLine(batch), mustLine, alsoLine, backfill, receiptLine, ...lines, footer]
+    return [head, originLine(batch), mustLine, forged ? '※ 代传，非本人所写' : null, alsoLine, backfill, receiptLine, ...lines, footer]
       .filter((line) => line !== null)
       .join('\n')
   }
