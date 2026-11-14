@@ -15,7 +15,7 @@
 //     the turn it caused.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 const ROOM_ID = 'r1'
@@ -375,6 +375,26 @@ export function apply(ctx) {
     return `补读：你落了 ${missed.length} 条，但只看 ${range} 这 ${shown.length} 条就够；更早的（含昨天的）不用管`
   }
 
+  // References are stored as `原文 + base` and resolved at read time. If the
+  // path cannot be resolved under the sender's base, say so plainly: never fall
+  // back to the reader's cwd, which would point somewhere real but wrong.
+  function unresolvedRefs(batch) {
+    const problems = []
+    for (const message of batch) {
+      const root = message.root
+      if (typeof root !== 'string' || root === '') continue
+      const tokens = String(message.text ?? '').match(/@[^\s@]+/g)
+      if (tokens === null) continue
+      for (const token of tokens) {
+        const rel = token.slice(1)
+        const full = isAbsolute(rel) ? rel : join(root, rel)
+        if (existsSync(full)) continue
+        problems.push(`${token}（按 base 解析为 ${full}，不存在）`)
+      }
+    }
+    return problems
+  }
+
   function pointerText(member, batch, highlighted, alsoNames, mode = 'chat') {
     const first = batch[0]
     const last = batch[batch.length - 1]
@@ -395,12 +415,16 @@ export function apply(ctx) {
     const hasAt = batch.some((message) => /[@＠]/.test(String(message.text ?? '')))
     const roots = [...new Set(batch.map((message) => message.root).filter((value) => typeof value === 'string' && value !== ''))]
     const rootLine = hasAt && roots.length > 0 ? `（@ 相对：${roots.join(' ； ')}）` : null
+    const broken = unresolvedRefs(batch)
+    const brokenLine = broken.length > 0
+      ? `⚠ 引用失效（不要按你的 cwd 去读）：${broken.join('、')}`
+      : null
 
     // An agent-authored batch is a doorbell, not a letter: say who rang and with
     // which symbol, and leave the reading to room_read.
     if (!fromUser) {
       const mark = highlighted ? (mode === 'work' ? '（#你）' : '（¥你）') : ''
-      return [head, `${last.from} 发的${mark}——room_read() 看全文。`, '※ 代传，非本人所写', rootLine, alsoLine, receiptLine]
+      return [head, `${last.from} 发的${mark}——room_read() 看全文。`, '※ 代传，非本人所写', rootLine, brokenLine, alsoLine, receiptLine]
         .filter((line) => line !== null)
         .join('\n')
     }
@@ -425,7 +449,7 @@ export function apply(ctx) {
     } else {
       footer = '闲聊：回短一点，一两句就够；不想回就调 room_ack()。'
     }
-    return [head, originLine(batch), mustLine, alsoLine, rootLine, backfill, receiptLine, ...lines, footer]
+    return [head, originLine(batch), mustLine, alsoLine, rootLine, brokenLine, backfill, receiptLine, ...lines, footer]
       .filter((line) => line !== null)
       .join('\n')
   }
