@@ -160,7 +160,7 @@ window.__ModuleLoader__.load({
       return message.from
     }
 
-    function Bubble({ message, mine, name }) {
+    function Bubble({ message, mine, name, readers }) {
       return h('div', {
         style: {
           display: 'flex',
@@ -178,19 +178,31 @@ window.__ModuleLoader__.load({
         h('div', {
           style: {
             background: mine ? '#95ec69' : 'var(--dsw-alias-bg-layer-1)',
-            color: 'var(--dsw-alias-label-primary)',
+            // On the green bubble the theme's primary label can be white, which
+            // disappears; the bubble keeps its own ink.
+            color: mine ? '#1a1a1a' : 'var(--dsw-alias-label-primary)',
             padding: '8px 11px',
             borderRadius: 6,
             fontSize: 14,
             lineHeight: 1.55,
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
+            // A border, because layer-1 can equal the panel background.
+            border: mine ? '1px solid transparent' : '1px solid var(--dsw-alias-border-l1)',
             boxShadow: '0 1px 1px rgba(0,0,0,.05)',
           },
         }, message.text),
         message.blob !== undefined && h('div', {
           style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', margin: '3px 4px 0', textAlign: mine ? 'right' : 'left' },
-        }, `全文 ${message.blob.chars} 字 · rooms-blobs/${message.blob.name}`)
+        }, `全文 ${message.blob.chars} 字 · rooms-blobs/${message.blob.name}`),
+        // One reserved line under every bubble: who has seen this one.
+        h('div', {
+          style: {
+            fontSize: 10, lineHeight: '14px', minHeight: 14, margin: '3px 4px 0',
+            color: 'var(--dsw-alias-label-secondary)',
+            textAlign: mine ? 'right' : 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          },
+        }, readers.length > 0 ? `已看 ${readers.join('、')}` : '')
       )
       )
     }
@@ -626,9 +638,14 @@ window.__ModuleLoader__.load({
         const previous = index === 0 ? undefined : messages[index - 1]
         const divider = showTime(index, message, previous) ? h(TimeDivider, { key: `t-${message.seq}`, at: message.at }) : null
         const displayName = nameFor(message, status?.members)
+        const readers = (status?.members ?? [])
+          .filter((member) => member.kind === 'agent'
+            && Number.isFinite(member.seenSeq)
+            && member.seenSeq >= message.seq)
+          .map((member) => member.name)
         const body = message.kind === 'system'
           ? h(SystemRow, { key: message.seq, message })
-          : h(Bubble, { key: message.seq, message, mine: displayName === mine, name: displayName })
+          : h(Bubble, { key: message.seq, message, mine: displayName === mine, name: displayName, readers })
         return h(React.Fragment, { key: `f-${message.seq}` }, divider, body)
       }),
       messages.length === 0 && h('div', {

@@ -792,6 +792,12 @@ export function apply(ctx) {
         sessionId: member.sessionId,
         active: member.active !== false,
         unread: unreadCount(member),
+        // Highest seq this member is known to have seen — the client uses it to
+        // write "已看" under a bubble.
+        seenSeq: Math.max(
+          Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0,
+          Number.isFinite(member.lastSeenSeq) ? member.lastSeenSeq : 0,
+        ),
         live,
         running: state?.running === true,
         queued: Array.isArray(state?.queue) ? state.queue.length : 0,
