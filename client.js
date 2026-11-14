@@ -389,6 +389,7 @@ window.__ModuleLoader__.load({
       const [editingTitle, setEditingTitle] = useState(false)
       const [titleDraft, setTitleDraft] = useState('')
       const listRef = useRef(null)
+      const composerRef = useRef(null)
       const lastSeqRef = useRef(0)
       const ackAtRef = useRef(0)
       const stickRef = useRef(true)
@@ -431,6 +432,16 @@ window.__ModuleLoader__.load({
         const handle = setTimeout(() => setAck(null), 6000)
         return () => clearTimeout(handle)
       }, [ack])
+
+      // Grow the composer with its content, up to four rows, so a long message
+      // can be read back before sending.
+      useEffect(() => {
+        const node = composerRef.current
+        if (node === null) return
+        node.style.height = 'auto'
+        const max = 38 * 4
+        node.style.height = `${Math.min(node.scrollHeight, max)}px`
+      }, [draft])
 
       // Poll the delta while the panel is visible; stop when it is not.
       useEffect(() => {
@@ -665,6 +676,7 @@ window.__ModuleLoader__.load({
         style: { flex: '0 0 auto', borderTop: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' },
       },
       h('textarea', {
+        ref: composerRef,
         value: draft,
         onChange: (event) => setDraft(event.target.value),
         onKeyDown: (event) => {
@@ -676,8 +688,10 @@ window.__ModuleLoader__.load({
         placeholder: '说点什么…（#名字 派活 · ¥名字 叫人 · Enter 发送）',
         rows: 1,
         style: {
-          flex: 1, resize: 'none', minHeight: 38, maxHeight: 140, padding: '9px 11px', fontSize: 14,
-          borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2)', outline: 'none', fontFamily: 'inherit', lineHeight: 1.5,
+          flex: 1, resize: 'none', minHeight: 38, maxHeight: 38 * 4, padding: '9px 11px', fontSize: 14,
+          borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2)', outline: 'none',
+          fontFamily: 'inherit', lineHeight: 1.5, background: 'var(--dsw-alias-bg-base)',
+          color: 'var(--dsw-alias-label-primary)', overflowY: 'auto',
         },
       }),
       h('button', {
