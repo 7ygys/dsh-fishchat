@@ -542,6 +542,13 @@ export function apply(ctx) {
     }
     const record = { requestId, cursorBefore, startedAt, sawRunning: false, memberName: member.name, batch, handoffDepth: handoffDepth ?? 0 }
     deliveries.set(member.sessionId, record)
+    // Being handed a pointer IS seeing that message — its preview is right
+    // there. Without this, a member that answered seq N still gets told later
+    // that it "missed" seq N.
+    const seenTo = batch[batch.length - 1].seq
+    if (!Number.isFinite(member.lastSeenSeq) || member.lastSeenSeq < seenTo) {
+      member.lastSeenSeq = seenTo
+    }
     const current = room()
     if (current !== undefined) {
       // Persisted so a plugin reload mid-turn does not orphan the answer.
