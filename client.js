@@ -508,6 +508,17 @@ window.__ModuleLoader__.load({
         return () => clearTimeout(handle)
       }, [ack])
 
+      // Heartbeat: while the group panel is open, remember it. A plugin reload
+      // removes the `main` entry, which makes the layout fall back to the
+      // conversation view — on the way back up, this is what tells us to return.
+      useEffect(() => {
+        const key = 'dsh-rooms:group-open'
+        const beat = () => localStorage.setItem(key, String(Date.now()))
+        beat()
+        const handle = setInterval(beat, 5000)
+        return () => clearInterval(handle)
+      }, [])
+
       // Poll the delta while the panel is visible; stop when it is not.
       useEffect(() => {
         let alive = true
@@ -981,9 +992,25 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist', id: 'group', order: 100, label: '群',
         }, GroupIcon))
-        ctx.slots.inject('main', () => ctx.slots.register({
-          name: 'main', key: 'group',
-        }, GroupPanel))
+        ctx.slots.inject('main', () => {
+          const dispose = ctx.slots.register({ name: 'main', key: 'group' }, GroupPanel)
+          // If the panel was open right before a reload, put the user back.
+          try {
+            const last = Number(localStorage.getItem('dsh-rooms:group-open') ?? 0)
+            if (Date.now() - last < 60000) {
+              setTimeout(() => {
+                try {
+                  ctx.layout.selectPanel('group')
+                } catch {
+                  /* layout not ready yet: leaving the default view is fine */
+                }
+              }, 300)
+            }
+          } catch {
+            /* localStorage unavailable: skip the restore */
+          }
+          return dispose
+        })
       },
     }
   },
