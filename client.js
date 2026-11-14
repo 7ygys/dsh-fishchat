@@ -202,7 +202,7 @@ window.__ModuleLoader__.load({
             color: 'var(--dsw-alias-label-secondary)',
             textAlign: mine ? 'right' : 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           },
-        }, readers.length > 0 ? `已看 ${readers.join('、')}` : '')
+        }, readers.length > 0 ? `已通知 ${readers.join('、')}` : '')
       )
       )
     }

@@ -371,27 +371,37 @@ export function apply(ctx) {
   function pointerText(member, batch, highlighted, alsoNames, mode = 'chat') {
     const first = batch[0]
     const last = batch[batch.length - 1]
-    const range = first.seq === last.seq ? `seq ${first.seq}` : `seq ${first.seq}..${last.seq}`
+    const range = first.seq === last.seq ? `${first.seq}` : `${first.seq}-${last.seq}`
     const label = mode === 'work' ? '派活' : mode === 'attention' ? '特指' : '闲聊'
-    // `prompt` can only arrive as a user message, so the body has to say so.
-    // Anything not authored by the user is a hand-off, marked 转述 up front.
-    const forged = batch.some((message) => message.kind !== 'user')
-    const head = `【${room()?.title ?? '群'}】${batch.length} 条新消息（${range}）· ${label}${forged ? '（转述）' : ''}`
+    const must = highlighted ? '必须回' : '可不回'
+    // The room is addressed by id, not by name: names get changed.
+    const head = `【群·${ROOM_ID}·${label}·${must}·${batch.length} 条(${range})】`
     const receipt = room()?.receipts?.[member.name]
     const receiptLine = receipt === undefined || receipt === null
       ? null
       : `（你上一条已带回群，seq=${receipt.seq}）`
-    // The three questions a woken member should not have to work out itself.
-    const mustLine = highlighted
-      ? '回不回：必须回'
-      : mode === 'attention'
-        ? '回不回：别人被 ¥ 点名了，你看到了，回不回自己判断'
-        : '回不回：可不回，自己判断'
     const alsoLine = Array.isArray(alsoNames) && alsoNames.length > 0
       ? `也在回：${alsoNames.length} 个人`
       : null
+    const fromUser = batch.some((message) => message.kind === 'user')
+
+    // An agent-authored batch is a doorbell, not a letter: say who rang and with
+    // which symbol, and leave the reading to room_read.
+    if (!fromUser) {
+      const mark = highlighted ? (mode === 'work' ? '（#你）' : '（¥你）') : ''
+      return [head, `${last.from} 发的${mark}——room_read() 看全文。`, '※ 代传，非本人所写', alsoLine, receiptLine]
+        .filter((line) => line !== null)
+        .join('\n')
+    }
+
+    // User-authored: give the full picture.
     const lines = batch.slice(-1).map(previewLine)
     const backfill = backfillLine(member, first.seq)
+    const mustLine = highlighted
+      ? '回不回：必须回'
+      : mode === 'attention'
+        ? '回不回：别人被 ¥ 点名了，你看得到，回不回自己判断'
+        : '回不回：可不回，自己判断'
     let footer
     if (mode === 'work' && highlighted) {
       footer = `#${member.name} 被点名。只回群里这一条，别顺手做历史里的活。`
@@ -404,7 +414,7 @@ export function apply(ctx) {
     } else {
       footer = '闲聊：回短一点，一两句就够；不想回就调 room_ack()。'
     }
-    return [head, originLine(batch), mustLine, forged ? '※ 代传，非本人所写' : null, alsoLine, backfill, receiptLine, ...lines, footer]
+    return [head, originLine(batch), mustLine, alsoLine, backfill, receiptLine, ...lines, footer]
       .filter((line) => line !== null)
       .join('\n')
   }
