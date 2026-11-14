@@ -142,7 +142,7 @@ window.__ModuleLoader__.load({
 
     function TimeDivider({ at }) {
       return h('div', {
-        style: { textAlign: 'center', color: '#9a9a9a', fontSize: 12, margin: '10px 0' },
+        style: { textAlign: 'center', color: 'var(--dsw-alias-label-secondary)', fontSize: 12, margin: '10px 0' },
       }, timeLabel(at))
     }
 
@@ -173,12 +173,12 @@ window.__ModuleLoader__.load({
       h(Avatar, { name: name }),
       h('div', { style: { maxWidth: '68%', minWidth: 40 } },
         h('div', {
-          style: { fontSize: 11, color: '#8a8a8a', margin: '0 4px 3px', textAlign: mine ? 'right' : 'left' },
+          style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', margin: '0 4px 3px', textAlign: mine ? 'right' : 'left' },
         }, name),
         h('div', {
           style: {
-            background: mine ? '#95ec69' : '#ffffff',
-            color: '#1a1a1a',
+            background: mine ? '#95ec69' : 'var(--dsw-alias-bg-layer-1)',
+            color: 'var(--dsw-alias-label-primary)',
             padding: '8px 11px',
             borderRadius: 6,
             fontSize: 14,
@@ -189,7 +189,7 @@ window.__ModuleLoader__.load({
           },
         }, message.text),
         message.blob !== undefined && h('div', {
-          style: { fontSize: 11, color: '#8a8a8a', margin: '3px 4px 0', textAlign: mine ? 'right' : 'left' },
+          style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', margin: '3px 4px 0', textAlign: mine ? 'right' : 'left' },
         }, `全文 ${message.blob.chars} 字 · rooms-blobs/${message.blob.name}`)
       )
       )
@@ -197,7 +197,7 @@ window.__ModuleLoader__.load({
 
     function SystemRow({ message }) {
       return h('div', {
-        style: { textAlign: 'center', color: '#9a9a9a', fontSize: 12, margin: '10px 0', padding: '0 24px' },
+        style: { textAlign: 'center', color: 'var(--dsw-alias-label-secondary)', fontSize: 12, margin: '10px 0', padding: '0 24px' },
       }, message.text)
     }
 
@@ -296,11 +296,11 @@ window.__ModuleLoader__.load({
         style: { padding: '12px 16px', fontWeight: 600, borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between' },
       },
       h('span', null, '选成员（最多三条鱼）'),
-      h('span', { style: { color: '#999', fontWeight: 400, fontSize: 12 } }, `已选 ${Object.keys(selected).length}/3`)
+      h('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontWeight: 400, fontSize: 12 } }, `已选 ${Object.keys(selected).length}/3`)
       ),
       h('div', { style: { overflowY: 'auto', flex: 1 } },
         error !== null && h('div', { style: { padding: 12, color: '#c0392b' } }, error),
-        items.length === 0 && h('div', { style: { padding: 16, color: '#999' } }, '没有可选会话'),
+        items.length === 0 && h('div', { style: { padding: 16, color: 'var(--dsw-alias-label-secondary)' } }, '没有可选会话'),
         items.map((item) => {
           const picked = selected[item.sessionId] !== undefined
           const disabled = item.member && !picked
@@ -308,8 +308,8 @@ window.__ModuleLoader__.load({
             key: item.sessionId,
             onClick: () => { if (!disabled) toggle(item) },
             style: {
-              padding: '9px 16px', borderBottom: '1px solid #f3f3f3', cursor: disabled ? 'default' : 'pointer',
-              background: picked ? '#eef7ff' : 'transparent', opacity: disabled ? 0.45 : 1,
+              padding: '9px 16px', borderBottom: '1px solid var(--dsw-alias-border-l1)', cursor: disabled ? 'default' : 'pointer',
+              background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'transparent', opacity: disabled ? 0.45 : 1,
             },
           },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
@@ -317,12 +317,12 @@ window.__ModuleLoader__.load({
             h('div', { style: { flex: 1, minWidth: 0 } },
               h('div', { style: { fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
                 item.title ?? '（无标题）'),
-              h('div', { style: { fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
+              h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
                 `${item.cwd ?? ''} · ${timeLabel(item.updatedAt ?? Date.now())}${item.running ? ' · 正在跑' : ''}`)
             )
           ),
           picked && h('div', { style: { marginTop: 6, marginLeft: 24, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
-            h('span', { style: { fontSize: 11, color: '#888', whiteSpace: 'nowrap' } }, '群里叫它'),
+            h('span', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } }, '群里叫它'),
             h('input', {
               value: selected[item.sessionId].name,
               onClick: (event) => event.stopPropagation(),
@@ -336,7 +336,7 @@ window.__ModuleLoader__.load({
             }),
             h('label', {
               onClick: (event) => event.stopPropagation(),
-              style: { display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: '#666' },
+              style: { display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
             },
             h('input', {
               type: 'checkbox',
@@ -534,14 +534,14 @@ window.__ModuleLoader__.load({
       return h('div', {
         style: {
           position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
-          background: '#ededed', color: '#1a1a1a', fontFamily: 'inherit',
+          background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit',
         },
       },
       // status bar
       h('div', {
         style: {
           display: 'flex', alignItems: 'center', gap: 10, padding: '0 14px', height: 44,
-          background: '#f7f7f7', borderBottom: '1px solid #e0e0e0', flex: '0 0 auto',
+          background: 'var(--dsw-alias-bg-layer-1)', borderBottom: '1px solid var(--dsw-alias-border-l1)', flex: '0 0 auto',
         },
       },
       editingTitle
@@ -570,25 +570,25 @@ window.__ModuleLoader__.load({
       agents.length > 0 && h('div', { style: { display: 'flex', gap: 2 } },
         agents.slice(0, 2).map((agent) => h(Avatar, { key: agent.sessionId, name: agent.name, size: 20 }))
       ),
-      h('div', { style: { flex: 1, fontSize: 12, color: '#7a7a7a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
+      h('div', { style: { flex: 1, fontSize: 12, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
         h(StatusText, { status })),
       status?.wakeStats !== undefined && h('span', {
         title: (status.recentWakes ?? []).map((entry) => {
           const tail = entry.state === 'replied' ? '→ 回了' : entry.state === 'acked' ? '→ 说了看过了' : '→ 没说话'
           return `${timeLabel(entry.at)} ${entry.member} 被叫醒（seq ${entry.seqFrom}）${tail}`
         }).join('\n'),
-        style: { fontSize: 11, color: '#8a8a8a', whiteSpace: 'nowrap', cursor: 'default' },
+        style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', cursor: 'default' },
       }, `叫醒 ${status.wakeStats.called} · 回 ${status.wakeStats.replied}`),
       h('button', {
         onClick: () => setPicker(true),
-        style: { padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid #d5d5d5', background: '#fff', cursor: 'pointer' },
+        style: { padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--dsw-alias-border-l1)', background: '#fff', cursor: 'pointer' },
       }, '成员'),
       h('button', {
         onClick: toggleWake,
         title: wakeOn ? '正在叫醒：有新消息会把鱼叫起来' : '已静音：只落盘，不叫人',
         style: {
           padding: '4px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
-          border: `1px solid ${wakeOn ? '#9fd6a6' : '#d5d5d5'}`,
+          border: `1px solid ${wakeOn ? '#9fd6a6' : 'var(--dsw-alias-border-l1)'}`,
           background: wakeOn ? '#eaf7ec' : '#fff',
         },
       }, wakeOn ? '叫醒' : '不叫'),
@@ -597,7 +597,7 @@ window.__ModuleLoader__.load({
         title: muted ? '大静默：鱼之间不再互相点名叫醒（你说话照常）' : '鱼之间可以互相点名叫醒',
         style: {
           padding: '4px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
-          border: `1px solid ${muted ? '#e0b0a0' : '#d5d5d5'}`,
+          border: `1px solid ${muted ? '#e0b0a0' : 'var(--dsw-alias-border-l1)'}`,
           background: muted ? '#fdeee8' : '#fff',
         },
       }, muted ? '鱼静默' : '鱼可叫')
@@ -611,11 +611,11 @@ window.__ModuleLoader__.load({
       meta.hasMore && h('div', { style: { textAlign: 'center', marginBottom: 8 } },
         h('button', {
           onClick: loadOlder,
-          style: { fontSize: 12, padding: '3px 10px', borderRadius: 10, border: '1px solid #d8d8d8', background: '#fff', cursor: 'pointer', color: '#666' },
+          style: { fontSize: 12, padding: '3px 10px', borderRadius: 10, border: '1px solid #d8d8d8', background: '#fff', cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)' },
         }, '加载更早')
       ),
       meta.truncatedBefore !== null && meta.truncatedBefore !== undefined && h('div', {
-        style: { textAlign: 'center', fontSize: 12, color: '#9a9a9a', marginBottom: 8 },
+        style: { textAlign: 'center', fontSize: 12, color: 'var(--dsw-alias-label-secondary)', marginBottom: 8 },
       }, `早于 seq=${meta.truncatedBefore} 的消息已清理（只留一周）`),
       messages.map((message, index) => {
         const previous = index === 0 ? undefined : messages[index - 1]
@@ -627,12 +627,12 @@ window.__ModuleLoader__.load({
         return h(React.Fragment, { key: `f-${message.seq}` }, divider, body)
       }),
       messages.length === 0 && h('div', {
-        style: { textAlign: 'center', color: '#9a9a9a', fontSize: 13, marginTop: 40 },
+        style: { textAlign: 'center', color: 'var(--dsw-alias-label-secondary)', fontSize: 13, marginTop: 40 },
       }, '群里还没有消息。先点右上角「成员」把两条鱼拉进来。')
       ),
       // ack flash
       ack !== null && status !== null && h('div', {
-        style: { position: 'absolute', left: 16, bottom: 84, fontSize: 12, color: '#7a7a7a', pointerEvents: 'none' },
+        style: { position: 'absolute', left: 16, bottom: 84, fontSize: 12, color: 'var(--dsw-alias-label-secondary)', pointerEvents: 'none' },
       }, `${ack.member} 看过了 · ${timeLabel(ack.at)}`),
       error !== null && h('div', {
         style: { position: 'absolute', left: 14, right: 14, bottom: 78, color: '#c0392b', fontSize: 12, background: '#fff4f2', padding: '6px 10px', borderRadius: 4 },
@@ -640,7 +640,7 @@ window.__ModuleLoader__.load({
       }, error),
       // composer
       h('div', {
-        style: { flex: '0 0 auto', borderTop: '1px solid #e0e0e0', background: '#f7f7f7', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' },
+        style: { flex: '0 0 auto', borderTop: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' },
       },
       h('textarea', {
         value: draft,
@@ -655,7 +655,7 @@ window.__ModuleLoader__.load({
         rows: 1,
         style: {
           flex: 1, resize: 'none', minHeight: 38, maxHeight: 140, padding: '9px 11px', fontSize: 14,
-          borderRadius: 6, border: '1px solid #dcdcdc', outline: 'none', fontFamily: 'inherit', lineHeight: 1.5,
+          borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2)', outline: 'none', fontFamily: 'inherit', lineHeight: 1.5,
         },
       }),
       h('button', {
