@@ -160,7 +160,7 @@ window.__ModuleLoader__.load({
       return message.from
     }
 
-    function Bubble({ message, mine, name, readers }) {
+    function Bubble({ message, mine, name, readers, onQuote }) {
       return h('div', {
         style: {
           display: 'flex',
@@ -191,7 +191,15 @@ window.__ModuleLoader__.load({
             border: mine ? '1px solid transparent' : '1px solid var(--dsw-alias-border-l1)',
             boxShadow: '0 1px 1px rgba(0,0,0,.05)',
           },
-        }, message.text),
+        },
+        message.quote !== undefined && h('div', {
+          style: {
+            borderLeft: '3px solid var(--dsw-alias-border-l2)', paddingLeft: 6, marginBottom: 5,
+            fontSize: 12, lineHeight: 1.4, opacity: 0.75, whiteSpace: 'pre-wrap',
+          },
+        }, `${message.quote.from}：${message.quote.text}`),
+        h('div', null, message.text)
+        ),
         message.blob !== undefined && h('div', {
           style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', margin: '3px 4px 0', textAlign: mine ? 'right' : 'left' },
         }, `全文 ${message.blob.chars} 字 · rooms-blobs/${message.blob.name}`),
@@ -203,7 +211,16 @@ window.__ModuleLoader__.load({
             textAlign: mine ? 'right' : 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           },
         }, readers.length > 0 ? `已通知 ${readers.join('、')}` : '')
-      )
+      ),
+      // One small control per message: quote it into the composer.
+      h('button', {
+        onClick: () => onQuote({ seq: message.seq, from: name, text: String(message.text ?? '').slice(0, 200) }),
+        title: '引用这条',
+        style: {
+          alignSelf: 'center', border: 'none', background: 'transparent', cursor: 'pointer',
+          color: 'var(--dsw-alias-label-secondary)', fontSize: 13, padding: '2px 4px', opacity: 0.55,
+        },
+      }, '↩')
       )
     }
 
@@ -388,6 +405,7 @@ window.__ModuleLoader__.load({
       const [ack, setAck] = useState(null)
       const [editingTitle, setEditingTitle] = useState(false)
       const [titleDraft, setTitleDraft] = useState('')
+      const [quote, setQuote] = useState(null)
       const listRef = useRef(null)
       const composerRef = useRef(null)
       const lastSeqRef = useRef(0)
@@ -509,7 +527,8 @@ window.__ModuleLoader__.load({
         setDraft('')
         stickRef.current = true
         try {
-          await postJson(`${ROOM}/say`, { text })
+          await postJson(`${ROOM}/say`, { text, ...(quote === null ? {} : { quote }) })
+          setQuote(null)
           const data = await getJson(`${ROOM}/messages?since=${lastSeqRef.current}&limit=200`)
           if (Array.isArray(data.messages) && data.messages.length > 0) {
             lastSeqRef.current = Math.max(lastSeqRef.current, data.seq ?? 0)
@@ -656,7 +675,7 @@ window.__ModuleLoader__.load({
           .map((member) => member.name)
         const body = message.kind === 'system'
           ? h(SystemRow, { key: message.seq, message })
-          : h(Bubble, { key: message.seq, message, mine: displayName === mine, name: displayName, readers })
+          : h(Bubble, { key: message.seq, message, mine: displayName === mine, name: displayName, readers, onQuote: setQuote })
         return h(React.Fragment, { key: `f-${message.seq}` }, divider, body)
       }),
       messages.length === 0 && h('div', {
@@ -671,6 +690,23 @@ window.__ModuleLoader__.load({
         style: { position: 'absolute', left: 14, right: 14, bottom: 78, color: '#c0392b', fontSize: 12, background: '#fff4f2', padding: '6px 10px', borderRadius: 4 },
         onClick: () => setError(null),
       }, error),
+      // quoted message banner
+      quote !== null && h('div', {
+        style: {
+          flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 12px', fontSize: 12, color: 'var(--dsw-alias-label-secondary)',
+          background: 'var(--dsw-alias-bg-layer-2)',
+          borderLeft: '3px solid var(--dsw-alias-border-l2)',
+        },
+      },
+      h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+        `引用 ${quote.from}：${String(quote.text ?? '').slice(0, 80)}`),
+      h('button', {
+        onClick: () => setQuote(null),
+        title: '取消引用',
+        style: { border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', fontSize: 14 },
+      }, '×')
+      ),
       // composer
       h('div', {
         style: { flex: '0 0 auto', borderTop: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' },

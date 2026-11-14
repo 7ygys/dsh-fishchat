@@ -241,7 +241,7 @@ export function apply(ctx) {
     return join(dirname(FILE), 'rooms-blobs', name)
   }
 
-  function appendMessage({ from, kind, text, memberId }) {
+  function appendMessage({ from, kind, text, memberId, quote }) {
     trimHistory()
     db.seq += 1
     const seq = db.seq
@@ -271,6 +271,9 @@ export function apply(ctx) {
       // time, and names get changed. Old rows have no memberId and fall back to
       // their recorded signature.
       ...(memberId === undefined ? {} : { memberId }),
+      // A quoted message keeps only what is needed to draw the reference; the
+      // original still lives in the log under its own seq.
+      ...(quote === undefined ? {} : { quote }),
       ...(blob === null ? {} : { blob }),
     }
     db.messages[ROOM_ID].push(message)
@@ -776,6 +779,7 @@ export function apply(ctx) {
       text: message.text,
       at: message.at,
       ...(message.memberId === undefined ? {} : { memberId: message.memberId }),
+      ...(message.quote === undefined ? {} : { quote: message.quote }),
       ...(message.blob === undefined ? {} : { blob: message.blob }),
     }))
   }
@@ -934,7 +938,21 @@ export function apply(ctx) {
         const body = await readBody(req)
         const text = typeof body.text === 'string' ? body.text.trim() : ''
         if (text === '') return json(res, 400, { error: 'text is required' })
-        const message = appendMessage({ from: userMember()?.name ?? '我', kind: 'user', text, memberId: 'user' })
+        const rawQuote = body.quote
+        const quote = rawQuote !== null && typeof rawQuote === 'object' && Number.isFinite(rawQuote.seq)
+          ? {
+            seq: rawQuote.seq,
+            from: String(rawQuote.from ?? '').slice(0, 40),
+            text: String(rawQuote.text ?? '').slice(0, 200),
+          }
+          : undefined
+        const message = appendMessage({
+          from: userMember()?.name ?? '我',
+          kind: 'user',
+          text,
+          memberId: 'user',
+          ...(quote === undefined ? {} : { quote }),
+        })
         scheduleDeliveryWindow(message)
         return json(res, 200, { message })
       }
