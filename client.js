@@ -172,12 +172,22 @@ window.__ModuleLoader__.load({
         : part))
     }
 
+    // A quote line ends with `(#seq)` so the reference survives re-delivery.
+    function splitQuoteSeq(text) {
+      const match = /\s*\(#(\d+)\)\s*$/.exec(text)
+      return match === null ? { body: text, seq: null } : { body: text.slice(0, match.index), seq: match[1] }
+    }
+
     // Body lines: `> ` prefixes are inline quotes (brand colour), the rest is
     // normal text with @path chips.
     function renderBody(text) {
       const lines = String(text ?? '').split('\n')
-      return lines.map((line, index) => (line.startsWith('> ')
-        ? h('div', {
+      return lines.map((line, index) => {
+        if (!line.startsWith('> ')) {
+          return h('div', { key: index, style: { minHeight: '1.2em' } }, ...renderWithRefs(line))
+        }
+        const { body, seq } = splitQuoteSeq(line.slice(2))
+        return h('div', {
           key: index,
           style: {
             color: 'var(--dsw-alias-brand-primary)',
@@ -185,9 +195,18 @@ window.__ModuleLoader__.load({
             paddingLeft: 6,
             margin: '1px 0',
             opacity: 0.92,
+            display: 'flex',
+            gap: 6,
+            alignItems: 'baseline',
           },
-        }, ...renderWithRefs(line.slice(2)))
-        : h('div', { key: index, style: { minHeight: '1.2em' } }, ...renderWithRefs(line))))
+        },
+        h('span', { style: { flex: 1, minWidth: 0 } }, ...renderWithRefs(body)),
+        seq !== null && h('span', {
+          title: `引用的是 seq ${seq}`,
+          style: { fontSize: 10, opacity: 0.65, whiteSpace: 'nowrap' },
+        }, `#${seq}`)
+        )
+      })
     }
 
     function Bubble({ message, mine, name, readers, onQuote }) {
@@ -330,10 +349,12 @@ window.__ModuleLoader__.load({
       const save = async () => {
         setBusy(true)
         try {
+          const byId = new Map(items.map((item) => [item.sessionId, item]))
           const members = Object.entries(selected).map(([sessionId, entry]) => ({
             sessionId,
             name: entry.name.trim() || '成员',
             active: entry.active !== false,
+            ...(typeof byId.get(sessionId)?.cwd === 'string' ? { cwd: byId.get(sessionId).cwd } : {}),
           }))
           await postJson(`${ROOM}/members`, { members })
           onSaved()
@@ -441,6 +462,8 @@ window.__ModuleLoader__.load({
       const [atPicker, setAtPicker] = useState(null) // { dir, items, query, start }
       const atStartRef = useRef(0)
       const editorRef = useRef(null)
+      // Directory this user's `@path` tokens are relative to.
+      const fileRootRef = useRef('')
       const listRef = useRef(null)
       const lastSeqRef = useRef(0)
       const ackAtRef = useRef(0)
@@ -552,7 +575,10 @@ window.__ModuleLoader__.load({
         setHasText(false)
         stickRef.current = true
         try {
-          await postJson(`${ROOM}/say`, { text })
+          await postJson(`${ROOM}/say`, {
+            text,
+            ...(fileRootRef.current === '' ? {} : { root: fileRootRef.current }),
+          })
           const data = await getJson(`${ROOM}/messages?since=${lastSeqRef.current}&limit=200`)
           if (Array.isArray(data.messages) && data.messages.length > 0) {
             lastSeqRef.current = Math.max(lastSeqRef.current, data.seq ?? 0)
@@ -601,6 +627,7 @@ window.__ModuleLoader__.load({
       const loadFiles = useCallback(async (dir, query, start) => {
         try {
           const data = await getJson(`${ROOM}/files?dir=${encodeURIComponent(dir)}&q=${encodeURIComponent(query)}`)
+          if (typeof data.root === 'string' && data.root !== '') fileRootRef.current = data.root
           setAtPicker({ dir, items: data.items ?? [], query, start })
           atStartRef.current = start
         } catch {
@@ -623,7 +650,10 @@ window.__ModuleLoader__.load({
             if (child.nodeType !== 1) continue
             const chip = child.dataset?.chip
             if (chip === 'quote') {
-              out += `> ${child.dataset.text}\n`
+              // Keep the seq: the room can re-deliver, so text alone cannot
+              // identify which message was quoted.
+              const seq = child.dataset.seq
+              out += `> ${child.dataset.text}${seq === undefined ? '' : ` (#${seq})`}\n`
               continue
             }
             if (chip === 'file') {
@@ -646,11 +676,12 @@ window.__ModuleLoader__.load({
         return out.replace(/\u200b/g, '').replace(/^\n+/, '').trim()
       }
 
-      const makeChip = (kind, text, label) => {
+      const makeChip = (kind, text, label, seq) => {
         const chip = document.createElement('span')
         chip.contentEditable = 'false'
         chip.dataset.chip = kind
         chip.dataset.text = text
+        if (seq !== undefined) chip.dataset.seq = String(seq)
         chip.textContent = label
         chip.title = text
         chip.style.cssText = [
@@ -672,7 +703,7 @@ window.__ModuleLoader__.load({
         return selection.getRangeAt(0)
       }
 
-      const insertChip = (kind, text, label) => {
+      const insertChip = (kind, text, label, seq) => {
         const node = editorRef.current
         if (node === null) return
         node.focus()
@@ -683,7 +714,7 @@ window.__ModuleLoader__.load({
           range.collapse(false)
         }
         range.deleteContents()
-        const chip = makeChip(kind, text, label)
+        const chip = makeChip(kind, text, label, seq)
         range.insertNode(chip)
         const tail = document.createTextNode('\u200b')
         chip.after(tail)
@@ -700,7 +731,7 @@ window.__ModuleLoader__.load({
       const quoteMessage = (message) => {
         const snippet = String(message.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 120)
         if (snippet === '') return
-        insertChip('quote', snippet, snippet)
+        insertChip('quote', snippet, snippet, message.seq)
       }
 
       const onEditorInput = () => {

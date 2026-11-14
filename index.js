@@ -160,6 +160,7 @@ export function apply(ctx) {
               // is the "give me the next ones" cursor; this one only exists so a
               // re-read cannot make an old batch look unread.
               lastSeenSeq: Number.isFinite(m.lastSeenSeq) ? m.lastSeenSeq : 0,
+              ...(typeof m.cwd === 'string' && m.cwd !== '' ? { cwd: m.cwd } : {}),
             }
             : m))
           : [],
@@ -241,7 +242,7 @@ export function apply(ctx) {
     return join(dirname(FILE), 'rooms-blobs', name)
   }
 
-  function appendMessage({ from, kind, text, memberId, quote }) {
+  function appendMessage({ from, kind, text, memberId, quote, root }) {
     trimHistory()
     db.seq += 1
     const seq = db.seq
@@ -274,6 +275,9 @@ export function apply(ctx) {
       // A quoted message keeps only what is needed to draw the reference; the
       // original still lives in the log under its own seq.
       ...(quote === undefined ? {} : { quote }),
+      // The directory this message's `@path` references are relative to. It
+      // lives on the message, not the room: whoever wrote it has their own cwd.
+      ...(root === undefined ? {} : { root }),
       ...(blob === null ? {} : { blob }),
     }
     db.messages[ROOM_ID].push(message)
@@ -387,12 +391,16 @@ export function apply(ctx) {
       ? `也在回：${alsoNames.length} 个人`
       : null
     const fromUser = batch.some((message) => message.kind === 'user')
+    // `@path` is relative to the sender's directory, so say whose it is.
+    const hasAt = batch.some((message) => /[@＠]/.test(String(message.text ?? '')))
+    const roots = [...new Set(batch.map((message) => message.root).filter((value) => typeof value === 'string' && value !== ''))]
+    const rootLine = hasAt && roots.length > 0 ? `（@ 相对：${roots.join(' ； ')}）` : null
 
     // An agent-authored batch is a doorbell, not a letter: say who rang and with
     // which symbol, and leave the reading to room_read.
     if (!fromUser) {
       const mark = highlighted ? (mode === 'work' ? '（#你）' : '（¥你）') : ''
-      return [head, `${last.from} 发的${mark}——room_read() 看全文。`, '※ 代传，非本人所写', alsoLine, receiptLine]
+      return [head, `${last.from} 发的${mark}——room_read() 看全文。`, '※ 代传，非本人所写', rootLine, alsoLine, receiptLine]
         .filter((line) => line !== null)
         .join('\n')
     }
@@ -417,7 +425,7 @@ export function apply(ctx) {
     } else {
       footer = '闲聊：回短一点，一两句就够；不想回就调 room_ack()。'
     }
-    return [head, originLine(batch), mustLine, alsoLine, backfill, receiptLine, ...lines, footer]
+    return [head, originLine(batch), mustLine, alsoLine, rootLine, backfill, receiptLine, ...lines, footer]
       .filter((line) => line !== null)
       .join('\n')
   }
@@ -779,6 +787,7 @@ export function apply(ctx) {
       text: message.text,
       at: message.at,
       ...(message.memberId === undefined ? {} : { memberId: message.memberId }),
+      ...(message.root === undefined ? {} : { root: message.root }),
       ...(message.quote === undefined ? {} : { quote: message.quote }),
       ...(message.blob === undefined ? {} : { blob: message.blob }),
     }))
@@ -981,6 +990,7 @@ export function apply(ctx) {
           text,
           memberId: 'user',
           ...(quote === undefined ? {} : { quote }),
+          ...(typeof body.root === 'string' && body.root !== '' ? { root: body.root.slice(0, 400) } : {}),
         })
         scheduleDeliveryWindow(message)
         return json(res, 200, { message })
@@ -1047,6 +1057,10 @@ export function apply(ctx) {
               // Renaming must not rewind a member's cursor: that would make it
               // read the whole history again.
               lastReadSeq: Number.isFinite(before?.lastReadSeq) ? before.lastReadSeq : 0,
+              // Its working directory, so `@path` from this member resolves.
+              ...(typeof entry.cwd === 'string' && entry.cwd !== ''
+                ? { cwd: entry.cwd }
+                : (typeof before?.cwd === 'string' ? { cwd: before.cwd } : {})),
             }
           })
         const current = room()
@@ -1119,7 +1133,13 @@ export function apply(ctx) {
       if (member === undefined) throw new Error('你不在任何群里，不能使用 room_say。')
       const text = String(args?.text ?? '').trim()
       if (text === '') throw new Error('text 不能为空。')
-      const message = appendMessage({ from: member.name, kind: 'agent', text, memberId: member.sessionId })
+      const message = appendMessage({
+        from: member.name,
+        kind: 'agent',
+        text,
+        memberId: member.sessionId,
+        ...(typeof member.cwd === 'string' && member.cwd !== '' ? { root: member.cwd } : {}),
+      })
       runtime.set(member.sessionId, { ...(runtime.get(member.sessionId) ?? {}), lastSayAt: Date.now() })
       return { seq: message.seq, from: member.name }
     },
