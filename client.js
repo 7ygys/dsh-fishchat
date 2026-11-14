@@ -208,11 +208,16 @@ window.__ModuleLoader__.load({
       const busy = agents.filter((agent) => agent.running)
       const queued = agents.reduce((total, agent) => total + (agent.queued ?? 0), 0)
       const dead = agents.filter((agent) => agent.live === false)
+      // Per-member backlog: which one is behind, not just how much is behind.
+      const behind = agents
+        .filter((agent) => (agent.unread ?? 0) > 0)
+        .map((agent) => `${agent.name} ${agent.unread}`)
       if (busy.length > 0) {
         return `● ${busy.map((agent) => agent.name).join('、')} 在想…${queued > 0 ? ` · 排队 ${queued}` : ''}`
       }
       if (dead.length > 0) return `${dead.map((agent) => agent.name).join('、')} 不在线`
-      return `${agents.map((agent) => agent.name).join('、')} 在这里`
+      const here = `${agents.map((agent) => agent.name).join('、')} 在这里`
+      return behind.length > 0 ? `${here} · 积压 ${behind.join(' / ')}` : here
     }
 
     function MemberPicker({ status, onClose, onSaved }) {

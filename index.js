@@ -108,6 +108,9 @@ export function apply(ctx) {
   let windowFromSeq = 0
   let windowOpenedAt = 0
   let recoverRetryTimer = null
+  // Set when this plugin instance is torn down. Long-running loops must notice,
+  // otherwise a reload leaves the old instance still watching sessions.
+  let disposed = false
 
   // ---------------------------------------------------------------- storage
 
@@ -584,7 +587,7 @@ export function apply(ctx) {
   async function watchDelivery(member, record) {
     const deadline = Date.now() + WATCH_TIMEOUT_MS
     try {
-      while (Date.now() < deadline) {
+      while (Date.now() < deadline && !disposed) {
         await sleep(700)
         let state
         try {
@@ -612,6 +615,9 @@ export function apply(ctx) {
       deliveries.delete(member.sessionId)
       setMemberStatus(member.name, { activity: null, running: false })
     }
+    // Torn down mid-watch: leave `inflight` alone so the fresh instance picks
+    // the answer up instead of racing it.
+    if (disposed) return
     try {
       await harvest(member, record)
     } finally {
@@ -819,7 +825,12 @@ export function apply(ctx) {
   }
 
   function unreadCount(member) {
-    const from = Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0
+    // Same "seen" standard as the pointer's backfill hint: being handed a
+    // preview counts, and `room_read` counts. Two different standards would
+    // have one number say "caught up" while the other says "5 behind".
+    const read = Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0
+    const seen = Number.isFinite(member.lastSeenSeq) ? member.lastSeenSeq : 0
+    const from = Math.max(read, seen)
     return messages().filter((message) => message.seq > from).length
   }
 
@@ -1237,6 +1248,7 @@ export function apply(ctx) {
   ctx.effect(() => ctx.tools.register(withCleanResult(readTool)))
   ctx.effect(() => ctx.tools.register(withCleanResult(ackTool)))
   ctx.effect(() => () => {
+    disposed = true
     if (windowTimer !== null) clearTimeout(windowTimer)
     windowTimer = null
     if (recoverRetryTimer !== null) clearTimeout(recoverRetryTimer)
@@ -1251,6 +1263,7 @@ export function apply(ctx) {
   })
 
   async function recoverInflight() {
+    if (disposed) return
     const current = room()
     if (current?.inflight === undefined || Object.keys(current.inflight).length === 0) return
     let stillRunning = false
