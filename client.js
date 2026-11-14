@@ -172,6 +172,24 @@ window.__ModuleLoader__.load({
         : part))
     }
 
+    // Body lines: `> ` prefixes are inline quotes (brand colour), the rest is
+    // normal text with @path chips.
+    function renderBody(text) {
+      const lines = String(text ?? '').split('\n')
+      return lines.map((line, index) => (line.startsWith('> ')
+        ? h('div', {
+          key: index,
+          style: {
+            color: 'var(--dsw-alias-brand-primary)',
+            borderLeft: '2px solid var(--dsw-alias-brand-primary)',
+            paddingLeft: 6,
+            margin: '1px 0',
+            opacity: 0.92,
+          },
+        }, ...renderWithRefs(line.slice(2)))
+        : h('div', { key: index, style: { minHeight: '1.2em' } }, ...renderWithRefs(line))))
+    }
+
     function Bubble({ message, mine, name, readers, onQuote }) {
       return h('div', {
         style: {
@@ -212,7 +230,7 @@ window.__ModuleLoader__.load({
             opacity: 0.8, whiteSpace: 'pre-wrap', cursor: 'help',
           },
         }, `${message.quote.from}：${message.quote.text}`),
-        h('div', null, ...renderWithRefs(message.text))
+        h('div', null, ...renderBody(message.text))
         ),
         message.blob !== undefined && h('div', {
           style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', margin: '3px 4px 0', textAlign: mine ? 'right' : 'left' },
@@ -413,18 +431,17 @@ window.__ModuleLoader__.load({
       const [messages, setMessages] = useState([])
       const [meta, setMeta] = useState({ seq: 0, earliestSeq: 1, hasMore: false, truncatedBefore: null })
       const [status, setStatus] = useState(null)
-      const [draft, setDraft] = useState('')
       const [error, setError] = useState(null)
       const [picker, setPicker] = useState(false)
       const [ack, setAck] = useState(null)
       const [editingTitle, setEditingTitle] = useState(false)
       const [titleDraft, setTitleDraft] = useState('')
-      const [quote, setQuote] = useState(null)
+      const [hasText, setHasText] = useState(false)
       // `@` picker: open while the caret sits in an unfinished `@token`.
       const [atPicker, setAtPicker] = useState(null) // { dir, items, query, start }
       const atStartRef = useRef(0)
+      const editorRef = useRef(null)
       const listRef = useRef(null)
-      const composerRef = useRef(null)
       const lastSeqRef = useRef(0)
       const ackAtRef = useRef(0)
       const stickRef = useRef(true)
@@ -467,16 +484,6 @@ window.__ModuleLoader__.load({
         const handle = setTimeout(() => setAck(null), 6000)
         return () => clearTimeout(handle)
       }, [ack])
-
-      // Grow the composer with its content, up to four rows, so a long message
-      // can be read back before sending.
-      useEffect(() => {
-        const node = composerRef.current
-        if (node === null) return
-        node.style.height = 'auto'
-        const max = 38 * 5
-        node.style.height = `${Math.min(node.scrollHeight, max)}px`
-      }, [draft])
 
       // Poll the delta while the panel is visible; stop when it is not.
       useEffect(() => {
@@ -539,13 +546,13 @@ window.__ModuleLoader__.load({
       }
 
       const send = async () => {
-        const text = draft.trim()
+        const text = readEditor()
         if (text === '') return
-        setDraft('')
+        if (editorRef.current !== null) editorRef.current.innerHTML = ''
+        setHasText(false)
         stickRef.current = true
         try {
-          await postJson(`${ROOM}/say`, { text, ...(quote === null ? {} : { quote }) })
-          setQuote(null)
+          await postJson(`${ROOM}/say`, { text })
           const data = await getJson(`${ROOM}/messages?since=${lastSeqRef.current}&limit=200`)
           if (Array.isArray(data.messages) && data.messages.length > 0) {
             lastSeqRef.current = Math.max(lastSeqRef.current, data.seq ?? 0)
@@ -554,7 +561,8 @@ window.__ModuleLoader__.load({
           void refreshStatus()
         } catch (error) {
           setError(String(error.message ?? error))
-          setDraft(text)
+          if (editorRef.current !== null) editorRef.current.textContent = text
+          setHasText(true)
         }
       }
 
@@ -600,42 +608,143 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      const onDraftChange = (event) => {
-        const value = event.target.value
-        setDraft(value)
-        const caret = event.target.selectionStart ?? value.length
-        const before = value.slice(0, caret)
-        const at = before.lastIndexOf('@')
-        const inside = at >= 0 && !/\s/.test(before.slice(at + 1))
+      // Read the editor's DOM back into plain text. Chips serialise to the
+      // syntax the bubble renderer understands: `> quote` and `@path`.
+      const readEditor = () => {
+        const node = editorRef.current
+        if (node === null) return ''
+        let out = ''
+        const walk = (element) => {
+          for (const child of element.childNodes) {
+            if (child.nodeType === 3) {
+              out += child.textContent
+              continue
+            }
+            if (child.nodeType !== 1) continue
+            const chip = child.dataset?.chip
+            if (chip === 'quote') {
+              out += `> ${child.dataset.text}\n`
+              continue
+            }
+            if (chip === 'file') {
+              out += `@${child.dataset.text} `
+              continue
+            }
+            if (child.tagName === 'BR') {
+              out += '\n'
+              continue
+            }
+            if (child.tagName === 'DIV' || child.tagName === 'P') {
+              out += '\n'
+              walk(child)
+              continue
+            }
+            walk(child)
+          }
+        }
+        walk(node)
+        return out.replace(/\u200b/g, '').replace(/^\n+/, '').trim()
+      }
+
+      const makeChip = (kind, text, label) => {
+        const chip = document.createElement('span')
+        chip.contentEditable = 'false'
+        chip.dataset.chip = kind
+        chip.dataset.text = text
+        chip.textContent = label
+        chip.title = text
+        chip.style.cssText = [
+          'display:inline-block', 'max-width:240px', 'overflow:hidden', 'text-overflow:ellipsis',
+          'white-space:nowrap', 'vertical-align:bottom', 'padding:0 5px', 'margin:0 2px',
+          'border-radius:4px', 'font-size:12px', 'line-height:18px',
+          'color:var(--dsw-alias-brand-primary)', 'background:rgba(43,127,212,.14)',
+        ].join(';')
+        if (kind === 'quote') chip.style.borderLeft = '2px solid var(--dsw-alias-brand-primary)'
+        return chip
+      }
+
+      const caretRange = () => {
+        const node = editorRef.current
+        if (node === null) return null
+        const selection = window.getSelection()
+        if (selection === null || selection.rangeCount === 0) return null
+        if (!node.contains(selection.anchorNode)) return null
+        return selection.getRangeAt(0)
+      }
+
+      const insertChip = (kind, text, label) => {
+        const node = editorRef.current
+        if (node === null) return
+        node.focus()
+        let range = caretRange()
+        if (range === null) {
+          range = document.createRange()
+          range.selectNodeContents(node)
+          range.collapse(false)
+        }
+        range.deleteContents()
+        const chip = makeChip(kind, text, label)
+        range.insertNode(chip)
+        const tail = document.createTextNode('\u200b')
+        chip.after(tail)
+        const after = document.createRange()
+        after.setStartAfter(tail)
+        after.collapse(true)
+        const selection = window.getSelection()
+        selection?.removeAllRanges()
+        selection?.addRange(after)
+        setHasText(readEditor() !== '')
+      }
+
+      // Quote the message the user pressed ↩ on, inline at the caret.
+      const quoteMessage = (message) => {
+        const snippet = String(message.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 120)
+        if (snippet === '') return
+        insertChip('quote', snippet, snippet)
+      }
+
+      const onEditorInput = () => {
+        setHasText(readEditor() !== '')
+        const range = caretRange()
+        const node = editorRef.current
+        if (range === null || node === null) {
+          if (atPicker !== null) setAtPicker(null)
+          return
+        }
+        const before = range.cloneRange()
+        before.setStart(node, 0)
+        const text = before.toString()
+        const at = text.lastIndexOf('@')
+        const inside = at >= 0 && !/\s/.test(text.slice(at + 1))
         if (!inside) {
           if (atPicker !== null) setAtPicker(null)
           return
         }
-        const query = before.slice(at + 1)
-        const dir = atPicker?.dir ?? ''
-        void loadFiles(dir, query, at)
+        void loadFiles(atPicker?.dir ?? '', text.slice(at + 1), at)
       }
 
       const pickEntry = (entry) => {
         if (atPicker === null) return
-        const dir = entry.dir
-          ? [atPicker.dir, entry.name].filter(Boolean).join('/')
-          : atPicker.dir
         if (entry.dir) {
-          void loadFiles(dir, atPicker.query, atPicker.start)
+          void loadFiles([atPicker.dir, entry.name].filter(Boolean).join('/'), atPicker.query, atPicker.start)
           return
         }
-        const rel = [atPicker.dir, entry.name].filter(Boolean).join('/')
-        const start = atPicker.start
-        const careted = draft.slice(0, start) + `@${rel} `
-        setDraft(careted)
+        const range = caretRange()
+        // Remove the half-typed `@query` before inserting the chip.
+        if (range !== null) {
+          const back = atPicker.query.length + 1
+          try {
+            const cut = document.createRange()
+            cut.setStart(range.startContainer, Math.max(0, range.startOffset - back))
+            cut.setEnd(range.startContainer, range.startOffset)
+            cut.deleteContents()
+          } catch {
+            /* caret straddled nodes: leave the text, the chip still lands */
+          }
+        }
         setAtPicker(null)
-        requestAnimationFrame(() => {
-          const node = composerRef.current
-          if (node === null) return
-          node.focus()
-          node.setSelectionRange(careted.length, careted.length)
-        })
+        const rel = [atPicker.dir, entry.name].filter(Boolean).join('/')
+        insertChip('file', rel, `@${rel}`)
       }
 
       const mine = (status?.members ?? []).find((member) => member.kind === 'user')?.name ?? '我'
@@ -740,7 +849,7 @@ window.__ModuleLoader__.load({
           .map((member) => member.name)
         const body = message.kind === 'system'
           ? h(SystemRow, { key: message.seq, message })
-          : h(Bubble, { key: message.seq, message, mine: displayName === mine, name: displayName, readers, onQuote: setQuote })
+          : h(Bubble, { key: message.seq, message, mine: displayName === mine, name: displayName, readers, onQuote: quoteMessage })
         return h(React.Fragment, { key: `f-${message.seq}` }, divider, body)
       }),
       messages.length === 0 && h('div', {
@@ -755,23 +864,6 @@ window.__ModuleLoader__.load({
         style: { position: 'absolute', left: 14, right: 14, bottom: 78, color: '#c0392b', fontSize: 12, background: '#fff4f2', padding: '6px 10px', borderRadius: 4 },
         onClick: () => setError(null),
       }, error),
-      // quoted message banner
-      quote !== null && h('div', {
-        style: {
-          flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 8,
-          padding: '6px 12px', fontSize: 12, color: 'var(--dsw-alias-label-secondary)',
-          background: 'var(--dsw-alias-bg-layer-2)',
-          borderLeft: '3px solid var(--dsw-alias-border-l2)',
-        },
-      },
-      h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-        `引用 ${quote.from}：${String(quote.text ?? '').slice(0, 80)}`),
-      h('button', {
-        onClick: () => setQuote(null),
-        title: '取消引用',
-        style: { border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', fontSize: 14 },
-      }, '×')
-      ),
       // `@` file picker
       atPicker !== null && h('div', {
         style: {
@@ -804,31 +896,42 @@ window.__ModuleLoader__.load({
       h('div', {
         style: { flex: '0 0 auto', borderTop: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' },
       },
-      h('textarea', {
-        ref: composerRef,
-        value: draft,
-        onChange: (event) => onDraftChange(event),
+      h('div', {
+        style: { flex: 1, position: 'relative', minWidth: 0 },
+      },
+      hasText === false && h('div', {
+        style: {
+          position: 'absolute', left: 12, top: 9, fontSize: 14, lineHeight: 1.5,
+          color: 'var(--dsw-alias-label-secondary)', pointerEvents: 'none', userSelect: 'none',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', right: 8,
+        },
+      }, '说点什么…（#名字 派活 · ¥名字 叫人 · @文件 引用 · Enter 发送）'),
+      h('div', {
+        ref: editorRef,
+        contentEditable: true,
+        suppressContentEditableWarning: true,
+        onInput: onEditorInput,
         onKeyDown: (event) => {
           if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {
             event.preventDefault()
             void send()
           }
         },
-        placeholder: '说点什么…（#名字 派活 · ¥名字 叫人 · @文件 引用 · Enter 发送）',
-        rows: 1,
         style: {
-          flex: 1, resize: 'none', minHeight: 38, maxHeight: 38 * 5, padding: '9px 11px', fontSize: 14,
+          minHeight: 38, maxHeight: 38 * 5, overflowY: 'auto', padding: '9px 11px', fontSize: 14,
           borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2)', outline: 'none',
           fontFamily: 'inherit', lineHeight: 1.5, background: 'var(--dsw-alias-bg-base)',
-          color: 'var(--dsw-alias-label-primary)', overflowY: 'auto',
+          color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
         },
-      }),
+      })
+      ),
       h('button', {
         onClick: () => void send(),
-        disabled: draft.trim() === '',
+        disabled: hasText === false,
         style: {
           padding: '0 18px', height: 38, borderRadius: 6, border: 'none',
-          background: draft.trim() === '' ? '#c9c9c9' : '#07c160', color: '#fff', cursor: draft.trim() === '' ? 'default' : 'pointer',
+          background: hasText === false ? '#c9c9c9' : '#07c160', color: '#fff',
+          cursor: hasText === false ? 'default' : 'pointer',
           fontSize: 14, flex: '0 0 auto',
         },
       }, '发送')
