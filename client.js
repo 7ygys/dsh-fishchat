@@ -369,6 +369,8 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState(null)
       const [picker, setPicker] = useState(false)
       const [ack, setAck] = useState(null)
+      const [editingTitle, setEditingTitle] = useState(false)
+      const [titleDraft, setTitleDraft] = useState('')
       const listRef = useRef(null)
       const lastSeqRef = useRef(0)
       const ackAtRef = useRef(0)
@@ -512,6 +514,18 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const saveTitle = async () => {
+        const title = titleDraft.trim()
+        setEditingTitle(false)
+        if (title === '' || title === (status?.room?.title ?? '群')) return
+        try {
+          await postJson(`${ROOM}/title`, { title })
+          void refreshStatus()
+        } catch (error) {
+          setError(String(error.message ?? error))
+        }
+      }
+
       const mine = (status?.members ?? []).find((member) => member.kind === 'user')?.name ?? '我'
       const agents = (status?.members ?? []).filter((member) => member.kind === 'agent')
       const wakeOn = status?.room?.wakeEnabled !== false
@@ -530,7 +544,29 @@ window.__ModuleLoader__.load({
           background: '#f7f7f7', borderBottom: '1px solid #e0e0e0', flex: '0 0 auto',
         },
       },
-      h('div', { style: { fontWeight: 600, fontSize: 14 } }, status?.room?.title ?? '群'),
+      editingTitle
+        ? h('input', {
+          value: titleDraft,
+          autoFocus: true,
+          onChange: (event) => setTitleDraft(event.target.value),
+          onBlur: () => { void saveTitle() },
+          onKeyDown: (event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              void saveTitle()
+            }
+            if (event.key === 'Escape') setEditingTitle(false)
+          },
+          style: {
+            fontWeight: 600, fontSize: 14, width: 150, padding: '2px 6px',
+            border: '1px solid #b9d4ef', borderRadius: 4, fontFamily: 'inherit',
+          },
+        })
+        : h('div', {
+          title: '点一下改群名',
+          onClick: () => { setTitleDraft(status?.room?.title ?? '群'); setEditingTitle(true) },
+          style: { fontWeight: 600, fontSize: 14, cursor: 'text', padding: '2px 4px', borderRadius: 4 },
+        }, status?.room?.title ?? '群'),
       agents.length > 0 && h('div', { style: { display: 'flex', gap: 2 } },
         agents.slice(0, 2).map((agent) => h(Avatar, { key: agent.sessionId, name: agent.name, size: 20 }))
       ),

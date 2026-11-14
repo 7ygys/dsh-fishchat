@@ -937,6 +937,17 @@ export function apply(ctx) {
         }
         return json(res, 200, { muteAgentToAgent: current?.muteAgentToAgent === true })
       }
+      if (method === 'POST' && path === '/rooms/r1/title') {
+        const body = await readBody(req)
+        const title = typeof body.title === 'string' ? body.title.trim().slice(0, 24) : ''
+        if (title === '') return json(res, 400, { error: 'title is required' })
+        const current = room()
+        if (current !== undefined) {
+          current.title = title
+          void persist()
+        }
+        return json(res, 200, { title: current?.title ?? title })
+      }
       if (method === 'POST' && path === '/rooms/r1/members') {
         const body = await readBody(req)
         const incoming = Array.isArray(body.members) ? body.members : []
