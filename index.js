@@ -14,7 +14,7 @@
 //     durable session log (`source.rpcId`), so harvesting can claim exactly
 //     the turn it caused.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -933,6 +933,35 @@ export function apply(ctx) {
       }
       if (method === 'GET' && path === '/rooms/r1/candidates') {
         return json(res, 200, await handleCandidates())
+      }
+      if (method === 'GET' && path === '/rooms/r1/files') {
+        // Backs the `@` picker: a plain directory listing under the default
+        // working directory, so the room can reference real files.
+        // Prefer the directory of the most recently active session: that is the
+        // workspace the user is actually looking at, not the plugin's cwd.
+        const recent = await ctx.sessionController
+          .list({}, AbortSignal.timeout(5000))
+          .then((value) => (value?.items ?? []).map((item) => item.cwd).find((cwd) => typeof cwd === 'string' && cwd !== ''))
+          .catch(() => undefined)
+        const working = ctx.get('workingDirectory')
+        const root = recent ?? working?.defaultDirectory ?? process.cwd()
+        const rel = url.searchParams.get('dir') ?? ''
+        const query = (url.searchParams.get('q') ?? '').toLowerCase()
+        const target = rel === '' ? root : join(root, rel)
+        if (target !== root && !target.startsWith(`${root}\\`) && !target.startsWith(`${root}/`)) {
+          return json(res, 400, { error: 'outside root' })
+        }
+        try {
+          const items = readdirSync(target, { withFileTypes: true })
+            .filter((entry) => !entry.name.startsWith('.'))
+            .map((entry) => ({ name: entry.name, dir: entry.isDirectory() }))
+            .filter((entry) => query === '' || entry.name.toLowerCase().includes(query))
+            .sort((left, right) => (left.dir === right.dir ? left.name.localeCompare(right.name) : left.dir ? -1 : 1))
+            .slice(0, 80)
+          return json(res, 200, { root, dir: rel, items })
+        } catch (error) {
+          return json(res, 200, { root, dir: rel, items: [], error: String(error?.message ?? error) })
+        }
       }
       if (method === 'POST' && path === '/rooms/r1/say') {
         const body = await readBody(req)

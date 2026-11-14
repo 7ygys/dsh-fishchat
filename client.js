@@ -160,6 +160,18 @@ window.__ModuleLoader__.load({
       return message.from
     }
 
+    // `@path` tokens render as brand-coloured chips; hover shows the path.
+    function renderWithRefs(text) {
+      const parts = String(text ?? '').split(/(@[^\s@]+)/g)
+      return parts.map((part, index) => (part.startsWith('@') && part.length > 1
+        ? h('span', {
+          key: index,
+          title: part.slice(1),
+          style: { color: 'var(--dsw-alias-brand-primary)' },
+        }, part)
+        : part))
+    }
+
     function Bubble({ message, mine, name, readers, onQuote }) {
       return h('div', {
         style: {
@@ -177,28 +189,30 @@ window.__ModuleLoader__.load({
         }, name),
         h('div', {
           style: {
-            background: mine ? '#95ec69' : 'var(--dsw-alias-bg-layer-1)',
+            background: mine ? '#95ec69' : 'var(--dsw-alias-bg-layer-2)',
             // On the green bubble the theme's primary label can be white, which
             // disappears; the bubble keeps its own ink.
             color: mine ? '#1a1a1a' : 'var(--dsw-alias-label-primary)',
             padding: '8px 11px',
-            borderRadius: 6,
+            borderRadius: 8,
             fontSize: 14,
             lineHeight: 1.55,
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
-            // A border, because layer-1 can equal the panel background.
-            border: mine ? '1px solid transparent' : '1px solid var(--dsw-alias-border-l1)',
-            boxShadow: '0 1px 1px rgba(0,0,0,.05)',
+            // A visible edge: layer colours alone are too close to the panel.
+            border: mine ? '1px solid rgba(0,0,0,.10)' : '1px solid var(--dsw-alias-border-l2)',
+            boxShadow: '0 1px 3px rgba(0,0,0,.10)',
           },
         },
         message.quote !== undefined && h('div', {
+          title: `${message.quote.from}：${message.quote.text}`,
           style: {
-            borderLeft: '3px solid var(--dsw-alias-border-l2)', paddingLeft: 6, marginBottom: 5,
-            fontSize: 12, lineHeight: 1.4, opacity: 0.75, whiteSpace: 'pre-wrap',
+            borderLeft: '3px solid var(--dsw-alias-brand-primary)',
+            paddingLeft: 7, marginBottom: 6, fontSize: 12, lineHeight: 1.45,
+            opacity: 0.8, whiteSpace: 'pre-wrap', cursor: 'help',
           },
         }, `${message.quote.from}：${message.quote.text}`),
-        h('div', null, message.text)
+        h('div', null, ...renderWithRefs(message.text))
         ),
         message.blob !== undefined && h('div', {
           style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', margin: '3px 4px 0', textAlign: mine ? 'right' : 'left' },
@@ -406,6 +420,9 @@ window.__ModuleLoader__.load({
       const [editingTitle, setEditingTitle] = useState(false)
       const [titleDraft, setTitleDraft] = useState('')
       const [quote, setQuote] = useState(null)
+      // `@` picker: open while the caret sits in an unfinished `@token`.
+      const [atPicker, setAtPicker] = useState(null) // { dir, items, query, start }
+      const atStartRef = useRef(0)
       const listRef = useRef(null)
       const composerRef = useRef(null)
       const lastSeqRef = useRef(0)
@@ -573,6 +590,54 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const loadFiles = useCallback(async (dir, query, start) => {
+        try {
+          const data = await getJson(`${ROOM}/files?dir=${encodeURIComponent(dir)}&q=${encodeURIComponent(query)}`)
+          setAtPicker({ dir, items: data.items ?? [], query, start })
+          atStartRef.current = start
+        } catch {
+          setAtPicker(null)
+        }
+      }, [])
+
+      const onDraftChange = (event) => {
+        const value = event.target.value
+        setDraft(value)
+        const caret = event.target.selectionStart ?? value.length
+        const before = value.slice(0, caret)
+        const at = before.lastIndexOf('@')
+        const inside = at >= 0 && !/\s/.test(before.slice(at + 1))
+        if (!inside) {
+          if (atPicker !== null) setAtPicker(null)
+          return
+        }
+        const query = before.slice(at + 1)
+        const dir = atPicker?.dir ?? ''
+        void loadFiles(dir, query, at)
+      }
+
+      const pickEntry = (entry) => {
+        if (atPicker === null) return
+        const dir = entry.dir
+          ? [atPicker.dir, entry.name].filter(Boolean).join('/')
+          : atPicker.dir
+        if (entry.dir) {
+          void loadFiles(dir, atPicker.query, atPicker.start)
+          return
+        }
+        const rel = [atPicker.dir, entry.name].filter(Boolean).join('/')
+        const start = atPicker.start
+        const careted = draft.slice(0, start) + `@${rel} `
+        setDraft(careted)
+        setAtPicker(null)
+        requestAnimationFrame(() => {
+          const node = composerRef.current
+          if (node === null) return
+          node.focus()
+          node.setSelectionRange(careted.length, careted.length)
+        })
+      }
+
       const mine = (status?.members ?? []).find((member) => member.kind === 'user')?.name ?? '我'
       const agents = (status?.members ?? []).filter((member) => member.kind === 'agent')
       const wakeOn = status?.room?.wakeEnabled !== false
@@ -707,6 +772,34 @@ window.__ModuleLoader__.load({
         style: { border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', fontSize: 14 },
       }, '×')
       ),
+      // `@` file picker
+      atPicker !== null && h('div', {
+        style: {
+          flex: '0 0 auto', maxHeight: 190, overflowY: 'auto', margin: '0 8px 4px',
+          background: 'var(--dsw-alias-bg-overlay)',
+          border: '1px solid var(--dsw-alias-border-l2)',
+          borderRadius: 6, boxShadow: '0 4px 16px rgba(0,0,0,.18)',
+        },
+      },
+      h('div', {
+        style: {
+          padding: '4px 10px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)',
+          borderBottom: '1px solid var(--dsw-alias-border-l1)',
+        },
+      }, atPicker.dir === '' ? '工作区' : atPicker.dir),
+      atPicker.items.length === 0 && h('div', {
+        style: { padding: 8, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
+      }, '没有匹配的文件'),
+      atPicker.items.map((entry) => h('div', {
+        key: entry.name,
+        onMouseDown: (event) => { event.preventDefault(); pickEntry(entry) },
+        style: { padding: '5px 10px', fontSize: 12, cursor: 'pointer', display: 'flex', gap: 6, alignItems: 'center' },
+      },
+      h('span', { style: { opacity: 0.6 } }, entry.dir ? '▸' : '·'),
+      h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
+      entry.dir && h('span', { style: { fontSize: 10, color: 'var(--dsw-alias-label-secondary)' } }, '进入')
+      ))
+      ),
       // composer
       h('div', {
         style: { flex: '0 0 auto', borderTop: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' },
@@ -714,7 +807,7 @@ window.__ModuleLoader__.load({
       h('textarea', {
         ref: composerRef,
         value: draft,
-        onChange: (event) => setDraft(event.target.value),
+        onChange: (event) => onDraftChange(event),
         onKeyDown: (event) => {
           if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {
             event.preventDefault()
