@@ -189,7 +189,7 @@ window.__ModuleLoader__.load({
         }, name),
         h('div', {
           style: {
-            background: mine ? '#95ec69' : 'var(--dsw-alias-bg-layer-2)',
+            background: mine ? '#95ec69' : 'var(--dsw-alias-bg-overlay)',
             // On the green bubble the theme's primary label can be white, which
             // disappears; the bubble keeps its own ink.
             color: mine ? '#1a1a1a' : 'var(--dsw-alias-label-primary)',
@@ -201,7 +201,7 @@ window.__ModuleLoader__.load({
             wordBreak: 'break-word',
             // A visible edge: layer colours alone are too close to the panel.
             border: mine ? '1px solid rgba(0,0,0,.10)' : '1px solid var(--dsw-alias-border-l2)',
-            boxShadow: '0 1px 3px rgba(0,0,0,.10)',
+            boxShadow: '0 1px 4px rgba(0,0,0,.14)',
           },
         },
         message.quote !== undefined && h('div', {
@@ -474,7 +474,7 @@ window.__ModuleLoader__.load({
         const node = composerRef.current
         if (node === null) return
         node.style.height = 'auto'
-        const max = 38 * 4
+        const max = 38 * 5
         node.style.height = `${Math.min(node.scrollHeight, max)}px`
       }, [draft])
 
@@ -814,10 +814,10 @@ window.__ModuleLoader__.load({
             void send()
           }
         },
-        placeholder: '说点什么…（#名字 派活 · ¥名字 叫人 · Enter 发送）',
+        placeholder: '说点什么…（#名字 派活 · ¥名字 叫人 · @文件 引用 · Enter 发送）',
         rows: 1,
         style: {
-          flex: 1, resize: 'none', minHeight: 38, maxHeight: 38 * 4, padding: '9px 11px', fontSize: 14,
+          flex: 1, resize: 'none', minHeight: 38, maxHeight: 38 * 5, padding: '9px 11px', fontSize: 14,
           borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2)', outline: 'none',
           fontFamily: 'inherit', lineHeight: 1.5, background: 'var(--dsw-alias-bg-base)',
           color: 'var(--dsw-alias-label-primary)', overflowY: 'auto',
