@@ -304,7 +304,12 @@ window.__ModuleLoader__.load({
       ),
       // One small control per message: quote it into the composer.
       h('button', {
-        onClick: () => onQuote({ seq: message.seq, from: name, text: String(message.text ?? '').slice(0, 200) }),
+        onClick: (event) => {
+          // Do not let this bubble: clicking outside the notes panel closes it,
+          // and this click has to reach the notes editor instead.
+          event.stopPropagation()
+          onQuote({ seq: message.seq, from: name, text: String(message.text ?? '').slice(0, 200) })
+        },
         title: '引用这条',
         style: {
           alignSelf: 'center', border: 'none', background: 'transparent', cursor: 'pointer',
@@ -524,6 +529,7 @@ window.__ModuleLoader__.load({
       })
       const notesWidthRef = useRef(notesWidth)
       const noteSaveTimer = useRef(null)
+      const noteEditorRef = useRef(null)
       const atStartRef = useRef(0)
       const editorRef = useRef(null)
       // Directory this user's `@path` tokens are relative to.
@@ -739,9 +745,10 @@ window.__ModuleLoader__.load({
 
       // Read the editor's DOM back into plain text. Chips serialise to the
       // syntax the bubble renderer understands: `> quote` and `@path`.
-      const readEditor = () => {
-        const node = editorRef.current
-        if (node === null) return ''
+      // `readEditor` / `insertChip` are generic over the editor node: the
+      // composer and the notes body both use them.
+      const readTree = (node) => {
+        if (node === null || node === undefined) return ''
         let out = ''
         const walk = (element) => {
           for (const child of element.childNodes) {
@@ -778,6 +785,8 @@ window.__ModuleLoader__.load({
         return out.replace(/\u200b/g, '').replace(/^\n+/, '').trim()
       }
 
+      const readEditor = () => readTree(editorRef.current)
+
       const makeChip = (kind, text, label, seq) => {
         const chip = document.createElement('span')
         chip.contentEditable = 'false'
@@ -796,20 +805,20 @@ window.__ModuleLoader__.load({
         return chip
       }
 
-      const caretRange = () => {
-        const node = editorRef.current
-        if (node === null) return null
+      const caretRangeIn = (node) => {
+        if (node === null || node === undefined) return null
         const selection = window.getSelection()
         if (selection === null || selection.rangeCount === 0) return null
         if (!node.contains(selection.anchorNode)) return null
         return selection.getRangeAt(0)
       }
 
-      const insertChip = (kind, text, label, seq) => {
-        const node = editorRef.current
-        if (node === null) return
+      const caretRange = () => caretRangeIn(editorRef.current)
+
+      const insertChipInto = (node, kind, text, label, seq) => {
+        if (node === null || node === undefined) return
         node.focus()
-        let range = caretRange()
+        let range = caretRangeIn(node)
         if (range === null) {
           range = document.createRange()
           range.selectNodeContents(node)
@@ -826,13 +835,22 @@ window.__ModuleLoader__.load({
         const selection = window.getSelection()
         selection?.removeAllRanges()
         selection?.addRange(after)
-        setHasText(readEditor() !== '')
+        // Only the composer feeds the send button; the notes body does not.
+        if (node === editorRef.current) setHasText(readEditor() !== '')
       }
 
-      // Quote the message the user pressed ↩ on, inline at the caret.
+      const insertChip = (kind, text, label, seq) => insertChipInto(editorRef.current, kind, text, label, seq)
+
+      // Quote the message the user pressed ↩ on. When the notes panel is open
+      // the quote goes into the note; otherwise into the message composer.
       const quoteMessage = (message) => {
         const snippet = String(message.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 120)
         if (snippet === '') return
+        if (notesOpen && noteEditorRef.current !== null) {
+          insertChipInto(noteEditorRef.current, 'quote', snippet, snippet, message.seq)
+          updateNote({ text: readTree(noteEditorRef.current) })
+          return
+        }
         insertChip('quote', snippet, snippet, message.seq)
       }
 
@@ -845,10 +863,33 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // A saved note is plain text where quotes are `> …` lines; put those back
+      // as chips when the note is opened.
+      const hydrateNote = (text) => {
+        const node = noteEditorRef.current
+        if (node === null) return
+        node.textContent = ''
+        const lines = String(text ?? '').split('\n')
+        lines.forEach((line, index) => {
+          if (line.startsWith('> ')) {
+            const { body, seq } = splitQuoteSeq(line.slice(2))
+            node.appendChild(makeChip('quote', body, body, seq ?? undefined))
+          } else {
+            node.appendChild(document.createTextNode(line))
+          }
+          if (index < lines.length - 1) node.appendChild(document.createElement('br'))
+        })
+      }
+
       const selectNote = (note) => {
         setActiveNote(note)
         setNoteDraft({ title: note.title, text: note.text })
       }
+
+      useEffect(() => {
+        if (activeNote === null) return
+        hydrateNote(activeNote.text)
+      }, [activeNote])
 
       const createNote = async () => {
         try {
@@ -1248,16 +1289,17 @@ window.__ModuleLoader__.load({
           background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
         },
       }),
-      h('textarea', {
-        value: noteDraft.text,
-        onChange: (event) => updateNote({ text: event.target.value }),
-        placeholder: '正文…（自动保存）',
+      h('div', {
+        ref: noteEditorRef,
+        contentEditable: true,
+        suppressContentEditableWarning: true,
+        onInput: () => { updateNote({ text: readTree(noteEditorRef.current) }) },
         style: {
           flex: 1, minHeight: 0, margin: '0 8px 8px', padding: '6px 8px', fontSize: 13,
-          lineHeight: 1.6, resize: 'none', borderRadius: 4, outline: 'none',
+          lineHeight: 1.6, overflowY: 'auto', borderRadius: 4, outline: 'none',
           border: '1px solid var(--dsw-alias-border-l1)',
           background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
-          fontFamily: 'inherit',
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
         },
       })
       ),
@@ -1270,6 +1312,8 @@ window.__ModuleLoader__.load({
       h('div', {
         ref: listRef,
         onScroll,
+        // Clicking anywhere outside the notes panel closes it.
+        onClick: () => { if (notesOpen) setNotesOpen(false) },
         style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '10px 16px 16px' },
       },
       meta.hasMore && h('div', { style: { textAlign: 'center', marginBottom: 8 } },
