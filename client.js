@@ -193,7 +193,9 @@ window.__ModuleLoader__.load({
           h('span', {
             title: body,
             style: {
-              display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
+              // A quarter of the bubble, so a quote reads as a tag rather than
+              // a line of body text.
+              display: 'inline-block', maxWidth: '25%', overflow: 'hidden', textOverflow: 'ellipsis',
               whiteSpace: 'nowrap', verticalAlign: 'bottom', padding: '1px 7px', borderRadius: 4,
               fontSize: 12, lineHeight: '18px',
               color: 'var(--dsw-alias-brand-primary)',
