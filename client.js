@@ -1220,26 +1220,32 @@ window.__ModuleLoader__.load({
         const node = editorRef.current
         if (node === null) return
         node.focus()
-        let range = caretRange()
-        if (range === null) {
-          range = document.createRange()
-          range.selectNodeContents(node)
-          range.collapse(false)
+        // Let the browser do it: execCommand manages the caret and the
+        // surrounding text nodes correctly, which hand-rolled range surgery
+        // kept getting wrong (a duplicated character on the next keystroke).
+        let done = false
+        try {
+          done = document.execCommand('insertText', false, value)
+        } catch {
+          done = false
         }
-        range.deleteContents()
-        const textNode = document.createTextNode(value)
-        range.insertNode(textNode)
-        // Anchor the caret the same way `insertChip` does. Without a zero-width
-        // node the browser sometimes keeps the old offset after splitting the
-        // text node, and the next keystroke lands twice.
-        const tail = document.createTextNode('\u200b')
-        textNode.after(tail)
-        const after = document.createRange()
-        after.setStartAfter(tail)
-        after.collapse(true)
-        const selection = window.getSelection()
-        selection?.removeAllRanges()
-        selection?.addRange(after)
+        if (!done) {
+          let range = caretRangeIn(node)
+          if (range === null) {
+            range = document.createRange()
+            range.selectNodeContents(node)
+            range.collapse(false)
+          }
+          range.deleteContents()
+          const textNode = document.createTextNode(value)
+          range.insertNode(textNode)
+          const after = document.createRange()
+          after.setStartAfter(textNode)
+          after.collapse(true)
+          const selection = window.getSelection()
+          selection?.removeAllRanges()
+          selection?.addRange(after)
+        }
         setHasText(readEditor() !== '')
         try {
           localStorage.setItem(`dsh-rooms:draft:${activeRoomId}`, editorRef.current?.innerHTML ?? '')
