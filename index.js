@@ -28,8 +28,10 @@ const MAX_MESSAGE_CHARS = 8000
 const WATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000
 const LONG_TURN_NOTICE_MS = 10 * 60 * 1000
 // A `queued` record that never turns into a delivery is a hole in the ledger.
-// After this long it becomes a failure the user can see.
-const QUEUED_TIMEOUT_MS = 10 * 60 * 1000
+// An hour, not ten minutes: a working agent can legitimately stay busy that
+// long. This is deliberately NOT the same number as the "still running"
+// notice — one is a nudge, the other gives up.
+const QUEUED_TIMEOUT_MS = 60 * 60 * 1000
 const POINTER_PREFIX = 'room-'
 const AGENT_HORN_EVERY = 20
 // How many missed messages one pointer may ask a member to catch up on.
