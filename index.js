@@ -1548,9 +1548,14 @@ export function apply(ctx) {
 
   // ----------------------------------------------------------------- tools
 
-  function callerContext(exec) {
+  function callerContext(exec, preferRoom) {
     const sessionId = exec?.agent?.id
     if (typeof sessionId !== 'string') return undefined
+    // An explicit room wins, when the caller is actually a member of it.
+    if (typeof preferRoom === 'string' && preferRoom !== '') {
+      const member = agentMembers(preferRoom).find((item) => item.sessionId === sessionId)
+      if (member !== undefined) return { member, roomId: preferRoom }
+    }
     const remembered = lastRoomBySession.get(sessionId)
     if (typeof remembered === 'string') {
       const member = agentMembers(remembered).find((item) => item.sessionId === sessionId)
@@ -1587,6 +1592,10 @@ export function apply(ctx) {
       type: 'object',
       properties: {
         text: { type: 'string', description: '要说的话，纯文本。' },
+        room: {
+          type: 'string',
+          description: '群 id（指针第一行里 `【群·rmwhtffu9·…】` 的那串）。不填就用最近叫你的群，再不行用第一个群。',
+        },
       },
       required: ['text'],
     },
@@ -1604,7 +1613,7 @@ export function apply(ctx) {
       },
     },
     async execute(args, exec) {
-      const caller = callerContext(exec)
+      const caller = callerContext(exec, args?.room)
       if (caller === undefined) throw new Error('你不在任何群里，不能使用 room_say。')
       const { member, roomId } = caller
       const text = String(args?.text ?? '').trim()
