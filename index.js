@@ -251,24 +251,24 @@ export function apply(ctx) {
     return saveChain
   }
 
-  function room() {
-    return db.rooms[ROOM_ID]
+  function room(id = ROOM_ID) {
+    return db.rooms[id]
   }
 
-  function messages() {
-    return db.messages[ROOM_ID] ?? []
+  function messages(id = ROOM_ID) {
+    return db.messages[id] ?? []
   }
 
   // ------------------------------------------------------------------ time
 
-  function trimHistory() {
-    const current = room()
+  function trimHistory(roomId = ROOM_ID) {
+    const current = room(roomId)
     if (current === undefined) return
     const cutoff = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000
-    const list = messages()
+    const list = messages(roomId)
     const kept = list.filter((message) => message.at >= cutoff)
     if (kept.length === list.length) return
-    db.messages[ROOM_ID] = kept
+    db.messages[roomId] = kept
     db.earliestSeq = kept.length > 0 ? kept[0].seq : db.seq + 1
     // No marker message on purpose: it would need a seq, and any seq newer than
     // the kept messages would break the ascending order every cursor relies on.
@@ -347,8 +347,8 @@ export function apply(ctx) {
     })
   }
 
-  function appendMessage({ from, kind, text, memberId, quote, root, attachments }) {
-    trimHistory()
+  function appendMessage({ from, kind, text, memberId, quote, root, attachments, roomId = ROOM_ID }) {
+    trimHistory(roomId)
     db.seq += 1
     const seq = db.seq
     let body = String(text ?? '')
@@ -356,7 +356,7 @@ export function apply(ctx) {
     // A very long message keeps its body in its own file so the room log stays
     // readable; the bubble carries a truncated copy plus the file's location.
     if (body.length > MAX_MESSAGE_CHARS) {
-      const name = `${ROOM_ID}-${seq}.txt`
+      const name = `${roomId}-${seq}.txt`
       try {
         mkdirSync(dirname(blobPath(name)), { recursive: true })
         writeFileSync(blobPath(name), body, 'utf8')
@@ -368,7 +368,7 @@ export function apply(ctx) {
     }
     const message = {
       seq,
-      roomId: ROOM_ID,
+      roomId,
       from,
       kind,
       text: body,
@@ -386,20 +386,20 @@ export function apply(ctx) {
       ...(Array.isArray(attachments) && attachments.length > 0 ? { attachments } : {}),
       ...(blob === null ? {} : { blob }),
     }
-    db.messages[ROOM_ID].push(message)
+    db.messages[roomId].push(message)
     void persist()
-    routeMessage(message)
+    routeMessage(message, roomId)
     return message
   }
 
-  function appendSystem(text) {
-    return appendMessage({ from: '系统', kind: 'system', text })
+  function appendSystem(text, roomId = ROOM_ID) {
+    return appendMessage({ from: '系统', kind: 'system', text, roomId })
   }
 
   // --------------------------------------------------------------- members
 
-  function agentMembers() {
-    const current = room()
+  function agentMembers(roomId = ROOM_ID) {
+    const current = room(roomId)
     return (current?.members ?? []).filter((member) => member.kind === 'agent' && typeof member.sessionId === 'string')
   }
 
@@ -407,8 +407,8 @@ export function apply(ctx) {
     return agentMembers().find((member) => member.sessionId === sessionId)
   }
 
-  function userMember() {
-    return (room()?.members ?? []).find((member) => member.kind === 'user')
+  function userMember(roomId = ROOM_ID) {
+    return (room(roomId)?.members ?? []).find((member) => member.kind === 'user')
   }
 
   function setMemberStatus(memberName, patch) {
@@ -682,16 +682,16 @@ export function apply(ctx) {
     await deliverBatch([message], plain, message.from)
   }
 
-  function routeMessage(message) {
+  function routeMessage(message, roomId = ROOM_ID) {
     if (message.kind === 'system') return
-    const current = room()
+    const current = room(roomId)
     if (current === undefined) return
     if (message.kind === 'user') {
       if (current.consecutiveAgent > 0) {
         current.consecutiveAgent = 0
         void persist()
       }
-      scheduleDeliveryWindow(message)
+      scheduleDeliveryWindow(message, roomId)
       return
     }
     // Agent message: the watchdog only speaks up, it never stops anything.
@@ -1023,15 +1023,15 @@ export function apply(ctx) {
     }))
   }
 
-  async function handleStatus() {
-    const current = room()
+  async function handleStatus(roomId = ROOM_ID) {
+    const current = room(roomId)
     const members = []
     for (const member of current?.members ?? []) {
       if (member.kind === 'user') {
         members.push({
           kind: 'user',
           name: member.name,
-          unread: unreadCount(member),
+          unread: unreadCount(member, roomId),
           avatar: typeof member.avatar === 'string' ? member.avatar : '',
         })
         continue
@@ -1050,7 +1050,7 @@ export function apply(ctx) {
         sessionId: member.sessionId,
         avatar: typeof member.avatar === 'string' ? member.avatar : '',
         active: member.active !== false,
-        unread: unreadCount(member),
+        unread: unreadCount(member, roomId),
         // Highest seq this member is known to have seen — the client uses it to
         // write "已看" under a bubble.
         seenSeq: Math.max(
@@ -1097,14 +1097,14 @@ export function apply(ctx) {
     }
   }
 
-  function unreadCount(member) {
+  function unreadCount(member, roomId) {
     // Same "seen" standard as the pointer's backfill hint: being handed a
     // preview counts, and `room_read` counts. Two different standards would
     // have one number say "caught up" while the other says "5 behind".
     const read = Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0
     const seen = Number.isFinite(member.lastSeenSeq) ? member.lastSeenSeq : 0
     const from = Math.max(read, seen)
-    return messages().filter((message) => message.seq > from).length
+    return messages(roomId).filter((message) => message.seq > from).length
   }
 
   // Candidate sessions for the member picker. `session/list` summaries carry no
@@ -1123,7 +1123,7 @@ export function apply(ctx) {
 
   async function handleCandidates() {
     const result = await ctx.sessionController.list({}, AbortSignal.timeout(8000))
-    const chosen = new Set(agentMembers().map((member) => member.sessionId))
+    const chosen = new Set(agentMembers(roomId).map((member) => member.sessionId))
     const items = (result?.items ?? [])
       .filter((item) => item.blank !== true && item.parentSessionId === undefined)
       .map((item) => ({
@@ -1139,7 +1139,7 @@ export function apply(ctx) {
   }
 
   async function handleMessages(query) {
-    const all = messages()
+    const all = messages(roomId)
     const sinceRaw = query.get('since')
     const beforeRaw = query.get('before')
     const limitRaw = query.get('limit')
@@ -1168,6 +1168,25 @@ export function apply(ctx) {
     }
   }
 
+  // What the group list needs: identity, members (for the mosaic icon), and the
+  // last line so the row can show a preview.
+  function roomSummary(item) {
+    const list = db.messages[item.id] ?? []
+    const last = list.length > 0 ? list[list.length - 1] : null
+    return {
+      id: item.id,
+      title: item.title ?? '群',
+      members: (item.members ?? []).map((member) => ({
+        kind: member.kind,
+        name: member.name,
+        avatar: typeof member.avatar === 'string' ? member.avatar : '',
+      })),
+      lastSeq: last?.seq ?? 0,
+      lastAt: last?.at ?? item.createdAt ?? 0,
+      lastText: last === null ? '' : String(last.text ?? '').replace(/\s+/g, ' ').slice(0, 40),
+    }
+  }
+
   async function route(req, res) {
     let url
     try {
@@ -1177,17 +1196,59 @@ export function apply(ctx) {
     }
     const path = url.pathname.replace(/\/+$/, '')
     const method = (req.method ?? 'GET').toUpperCase()
+    // `/rooms`            → list rooms
+    // `/rooms/<id>/<sub>` → anything about one room
+    const roomMatch = /^\/rooms(?:\/([A-Za-z0-9_-]{1,40}))?(\/.*)?$/.exec(path)
+    if (roomMatch === null) return json(res, 404, { error: 'not found' })
+    const roomId = roomMatch[1] ?? ROOM_ID
+    const sub = roomMatch[2] ?? ''
     try {
-      if (method === 'GET' && path === '/rooms/r1/messages') {
+      if (method === 'GET' && sub === '' && roomMatch[1] === undefined) {
+        const list = Object.values(db.rooms)
+          .filter((item) => item !== undefined && item.deleted !== true)
+          .map((item) => roomSummary(item))
+        return json(res, 200, { rooms: list })
+      }
+      if (method === 'POST' && sub === '' && roomMatch[1] === undefined) {
+        const body = await readBody(req)
+        const title = typeof body.title === 'string' && body.title.trim() !== '' ? body.title.trim().slice(0, 24) : '新群'
+        const id = `r${Date.now().toString(36)}`
+        db.rooms[id] = {
+          id,
+          title,
+          createdAt: Date.now(),
+          deleted: false,
+          wakeEnabled: true,
+          background: { type: 'color', value: '' },
+          activity: null,
+          acks: {},
+          receipts: {},
+          inflight: {},
+          wakeLog: [],
+          consecutiveAgent: 0,
+          members: [{ kind: 'user', name: '我', lastReadSeq: db.seq }],
+        }
+        db.messages[id] = []
+        void persist()
+        return json(res, 200, { room: roomSummary(db.rooms[id]) })
+      }
+      if (method === 'DELETE' && sub === '' && roomMatch[1] !== undefined) {
+        const current = room(roomId)
+        if (current === undefined) return json(res, 404, { error: 'no room' })
+        current.deleted = true
+        void persist()
+        return json(res, 200, { ok: true })
+      }
+      if (method === 'GET' && sub === '/messages') {
         return json(res, 200, await handleMessages(url.searchParams))
       }
-      if (method === 'GET' && path === '/rooms/r1/status') {
-        return json(res, 200, await handleStatus())
+      if (method === 'GET' && sub === '/status') {
+        return json(res, 200, await handleStatus(roomId))
       }
-      if (method === 'GET' && path === '/rooms/r1/candidates') {
+      if (method === 'GET' && sub === '/candidates') {
         return json(res, 200, await handleCandidates())
       }
-      if (method === 'GET' && path === '/rooms/r1/files') {
+      if (method === 'GET' && sub === '/files') {
         // Backs the `@` picker: a plain directory listing under the default
         // working directory, so the room can reference real files.
         // Prefer the directory of the most recently active session: that is the
@@ -1216,7 +1277,7 @@ export function apply(ctx) {
           return json(res, 200, { root, dir: rel, items: [], error: String(error?.message ?? error) })
         }
       }
-      if (method === 'POST' && path === '/rooms/r1/upload') {
+      if (method === 'POST' && sub === '/upload') {
         const name = (url.searchParams.get('name') ?? 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 120)
         let buffer
         try {
@@ -1241,8 +1302,8 @@ export function apply(ctx) {
           kind: kindOf(ext),
         })
       }
-      if (method === 'GET' && path.startsWith('/rooms/r1/file/')) {
-        const id = path.slice('/rooms/r1/file/'.length)
+      if (method === 'GET' && sub.startsWith('/file/')) {
+        const id = sub.slice('/file/'.length)
         // Only ids we generated: no traversal, no separators.
         if (!/^[0-9a-fA-F-]{36}\.[0-9a-z]{1,8}$/.test(id)) return json(res, 400, { error: 'bad id' })
         const full = join(filesDir(), id)
@@ -1261,7 +1322,7 @@ export function apply(ctx) {
         }
         return
       }
-      if (method === 'POST' && path === '/rooms/r1/say') {
+      if (method === 'POST' && sub === '/say') {
         const body = await readBody(req)
         const text = typeof body.text === 'string' ? body.text.trim() : ''
         const hasFiles = Array.isArray(body.attachments) && body.attachments.length > 0
@@ -1275,10 +1336,11 @@ export function apply(ctx) {
           }
           : undefined
         const message = appendMessage({
-          from: userMember()?.name ?? '我',
+          from: userMember(roomId)?.name ?? '我',
           kind: 'user',
           text,
           memberId: 'user',
+          roomId,
           ...(quote === undefined ? {} : { quote }),
           ...(typeof body.root === 'string' && body.root !== '' ? { root: body.root.slice(0, 400) } : {}),
           ...(Array.isArray(body.attachments)
@@ -1300,7 +1362,7 @@ export function apply(ctx) {
         scheduleDeliveryWindow(message)
         return json(res, 200, { message })
       }
-      if (method === 'POST' && path === '/rooms/r1/read') {
+      if (method === 'POST' && sub === '/read') {
         const user = userMember()
         if (user !== undefined) {
           user.lastReadSeq = db.seq
@@ -1308,27 +1370,27 @@ export function apply(ctx) {
         }
         return json(res, 200, { ok: true })
       }
-      if (method === 'POST' && path === '/rooms/r1/wake') {
+      if (method === 'POST' && sub === '/wake') {
         const body = await readBody(req)
-        const current = room()
+        const current = room(roomId)
         if (current !== undefined) {
           current.wakeEnabled = body.enabled !== false
           void persist()
         }
         return json(res, 200, { wakeEnabled: current?.wakeEnabled !== false })
       }
-      if (method === 'POST' && path === '/rooms/r1/mute') {
+      if (method === 'POST' && sub === '/mute') {
         const body = await readBody(req)
-        const current = room()
+        const current = room(roomId)
         if (current !== undefined) {
           current.muteAgentToAgent = body.enabled === true
           void persist()
         }
         return json(res, 200, { muteAgentToAgent: current?.muteAgentToAgent === true })
       }
-      if (method === 'POST' && path === '/rooms/r1/avatar') {
+      if (method === 'POST' && sub === '/avatar') {
         const body = await readBody(req)
-        const current = room()
+        const current = room(roomId)
         if (current === undefined) return json(res, 404, { error: 'no room' })
         const target = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : 'user'
         const member = (current.members ?? []).find((item) => (item.kind === 'user' ? 'user' : item.sessionId) === target)
@@ -1337,9 +1399,9 @@ export function apply(ctx) {
         void persist()
         return json(res, 200, { avatar: member.avatar })
       }
-      if (method === 'POST' && path === '/rooms/r1/background') {
+      if (method === 'POST' && sub === '/background') {
         const body = await readBody(req)
-        const current = room()
+        const current = room(roomId)
         if (current !== undefined) {
           current.background = {
             type: body.type === 'image' ? 'image' : 'color',
@@ -1349,22 +1411,22 @@ export function apply(ctx) {
         }
         return json(res, 200, { background: current?.background })
       }
-      if (method === 'POST' && path === '/rooms/r1/title') {
+      if (method === 'POST' && sub === '/title') {
         const body = await readBody(req)
         const title = typeof body.title === 'string' ? body.title.trim().slice(0, 24) : ''
         if (title === '') return json(res, 400, { error: 'title is required' })
-        const current = room()
+        const current = room(roomId)
         if (current !== undefined) {
           current.title = title
           void persist()
         }
         return json(res, 200, { title: current?.title ?? title })
       }
-      if (method === 'POST' && path === '/rooms/r1/members') {
+      if (method === 'POST' && sub === '/members') {
         const body = await readBody(req)
         const incoming = Array.isArray(body.members) ? body.members : []
         const previous = new Map(
-          (room()?.members ?? [])
+          (room(roomId)?.members ?? [])
             .filter((member) => member.kind === 'agent' && typeof member.sessionId === 'string')
             .map((member) => [member.sessionId, member]),
         )
@@ -1391,7 +1453,7 @@ export function apply(ctx) {
                 : (typeof before?.cwd === 'string' ? { cwd: before.cwd } : {})),
             }
           })
-        const current = room()
+        const current = room(roomId)
         if (current !== undefined) {
           const user = userMember()
           current.members = [user ?? { kind: 'user', name: '我', lastReadSeq: 0 }, ...agents]
@@ -1403,7 +1465,7 @@ export function apply(ctx) {
         for (const next of agents) {
           const before = previous.get(next.sessionId)
           if (before !== undefined && before.name !== next.name) {
-            appendSystem(`${before.name} 改名为「${next.name}」`)
+            appendSystem(`${before.name} 改名为「${next.name}」`, roomId)
           }
         }
         return json(res, 200, { ok: true, members: agents.length })
