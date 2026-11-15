@@ -837,29 +837,36 @@ window.__ModuleLoader__.load({
         const before = range.cloneRange()
         before.setStart(node, 0)
         const text = before.toString()
-        // Detect on an NFKC-folded copy so full-width ＃＠￥ work too. The text
-        // that gets stored stays exactly as typed; only detection is folded.
-        const norm = text.normalize('NFKC')
-        const at = norm.lastIndexOf('@')
-        const hash = Math.max(norm.lastIndexOf('#'), norm.lastIndexOf('¥'))
-        const atOpen = at >= 0 && !/\s/.test(norm.slice(at + 1))
-        const hashOpen = hash >= 0 && !/\s/.test(norm.slice(hash + 1))
-        // Whichever trigger is closer to the caret wins.
-        if (atOpen && at > hash) {
-          setMentionPicker(null)
-          void loadFiles(atPicker?.dir ?? '', norm.slice(at + 1), at)
+        // Only the TRIGGER characters are folded, via a tiny table. Whole-string
+        // NFKC would rewrite body text (① → 1, ㌔ → キロ); the query itself stays
+        // exactly as typed.
+        const TRIGGERS = { '#': '#', '@': '@', '¥': '¥', '＃': '#', '＠': '@', '￥': '¥' }
+        let triggerAt = -1
+        let trigger = null
+        for (let index = text.length - 1; index >= 0; index -= 1) {
+          const char = text[index]
+          if (/\s/.test(char)) break
+          if (TRIGGERS[char] !== undefined) {
+            triggerAt = index
+            trigger = TRIGGERS[char]
+            break
+          }
+        }
+        if (triggerAt < 0) {
+          if (atPicker !== null) setAtPicker(null)
+          if (mentionPicker !== null) setMentionPicker(null)
           return
         }
-        if (hashOpen) {
-          if (atPicker !== null) setAtPicker(null)
-          const query = norm.slice(hash + 1)
-          const items = (status?.members ?? []).filter((member) => member.kind === 'agent'
-            && (query === '' || member.name.includes(query)))
-          setMentionPicker({ symbol: norm[hash], query, items })
+        const query = text.slice(triggerAt + 1)
+        if (trigger === '@') {
+          setMentionPicker(null)
+          void loadFiles(atPicker?.dir ?? '', query, triggerAt)
           return
         }
         if (atPicker !== null) setAtPicker(null)
-        if (mentionPicker !== null) setMentionPicker(null)
+        const items = (status?.members ?? []).filter((member) => member.kind === 'agent'
+          && (query === '' || member.name.includes(query)))
+        setMentionPicker({ symbol: trigger, query, items })
       }
 
       const pickEntry = (entry) => {
