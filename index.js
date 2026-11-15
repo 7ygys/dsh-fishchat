@@ -889,13 +889,13 @@ export function apply(ctx) {
       pendingDelivery.delete(member.sessionId)
       // Never re-deliver the member its own message: that is how a broadcast
       // woke an agent with its own reply.
-      const fresh = messages(roomId).filter((message) => message.seq >= pending.fromSeq
+      const fresh = messages(record.roomId ?? ROOM_ID).filter((message) => message.seq >= pending.fromSeq
         && message.kind !== 'system'
         && message.from !== member.name)
       if (fresh.length > 0) {
         // The queued records for this member are about to be honoured; close
         // them out so the ledger does not keep stale "waiting" rows forever.
-        const current = room(roomId)
+        const current = room(record.roomId ?? ROOM_ID)
         let settled = false
         for (const entry of current?.wakeLog ?? []) {
           if (entry.member === member.name && entry.state === 'queued') {
@@ -912,7 +912,7 @@ export function apply(ctx) {
         const workHit = mentions(plain, member.name)
         const attentionHit = workHit ? false : attentionMentions(plain, member.name)
         const mode = workHit ? 'work' : attentionHit ? 'attention' : 'chat'
-        void deliverTo(member, fresh.slice(-5), workHit || attentionHit, 0, undefined, mode, roomId)
+        void deliverTo(member, fresh.slice(-5), workHit || attentionHit, 0, undefined, mode, record.roomId ?? ROOM_ID)
       }
     }
   }
