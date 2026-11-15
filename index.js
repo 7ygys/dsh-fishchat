@@ -454,7 +454,7 @@ export function apply(ctx) {
   // A member can miss messages because `#` / `¥` only ring the named ones. Tell
   // it what to catch up on: at most 12, and never crossing into yesterday.
   // Anything older gets no hint — that is left to the user to point out.
-  function backfillLine(member, beforeSeq) {
+  function backfillLine(member, beforeSeq, roomId = ROOM_ID) {
     const seen = Math.max(
       Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0,
       Number.isFinite(member.lastSeenSeq) ? member.lastSeenSeq : 0,
@@ -465,7 +465,7 @@ export function apply(ctx) {
     const dayStart = new Date().setHours(0, 0, 0, 0)
     // Your own messages are not "missed": counting them would tell a member it
     // failed to read the thing it just said.
-    const missed = messages().filter((message) => message.kind !== 'system'
+    const missed = messages(roomId).filter((message) => message.kind !== 'system'
       && message.from !== member.name
       && message.seq >= from
       && message.seq <= to)
@@ -501,7 +501,7 @@ export function apply(ctx) {
     return problems
   }
 
-  function pointerText(member, batch, highlighted, alsoNames, mode = 'chat') {
+  function pointerText(member, batch, highlighted, alsoNames, mode = 'chat', roomId = ROOM_ID) {
     const first = batch[0]
     const last = batch[batch.length - 1]
     const range = first.seq === last.seq ? `${first.seq}` : `${first.seq}-${last.seq}`
@@ -509,7 +509,7 @@ export function apply(ctx) {
     const must = highlighted ? '必须回' : '可不回'
     // The room is addressed by id, not by name: names get changed.
     const head = `【群·${ROOM_ID}·${label}·${must}·${batch.length} 条(${range})】`
-    const receipt = room()?.receipts?.[member.name]
+    const receipt = room(roomId)?.receipts?.[member.name]
     const receiptLine = receipt === undefined || receipt === null
       ? null
       : `（你上一条已带回群，seq=${receipt.seq}）`
@@ -537,7 +537,7 @@ export function apply(ctx) {
 
     // User-authored: give the full picture.
     const lines = batch.slice(-1).map(previewLine)
-    const backfill = backfillLine(member, first.seq)
+    const backfill = backfillLine(member, first.seq, roomId)
     const mustLine = highlighted
       ? '回不回：必须回'
       : mode === 'attention'
@@ -560,7 +560,7 @@ export function apply(ctx) {
       .join('\n')
   }
 
-  function scheduleDeliveryWindow(message) {
+  function scheduleDeliveryWindow(message, roomId = ROOM_ID) {
     if (windowFromSeq === 0) {
       windowFromSeq = message.seq
       windowOpenedAt = Date.now()
@@ -572,7 +572,7 @@ export function apply(ctx) {
       const from = windowFromSeq
       windowFromSeq = 0
       windowTimer = null
-      void flushUserWindow(from)
+      void flushUserWindow(from, roomId)
     }, delay)
   }
 
@@ -582,8 +582,8 @@ export function apply(ctx) {
   //   `#name`  → work hand-off: ONLY the named members are woken, and must reply.
   //   `¥name`  → broadcast: everyone active hears it, only the named must reply.
   //   neither  → broadcast: everyone active hears it, reply is optional.
-  function classifyBatch(normalized, senderName) {
-    const pool = agentMembers().filter((member) => member.name !== senderName)
+  function classifyBatch(normalized, senderName, roomId = ROOM_ID) {
+    const pool = agentMembers(roomId).filter((member) => member.name !== senderName)
     const active = pool.filter((member) => member.active !== false)
     const work = pool.filter((member) => mentions(normalized, member.name))
     const attention = pool.filter((member) => attentionMentions(normalized, member.name))
@@ -606,13 +606,13 @@ export function apply(ctx) {
     return out
   }
 
-  async function deliverBatch(batch, normalized, senderName) {
-    const current = room()
+  async function deliverBatch(batch, normalized, senderName, roomId = ROOM_ID) {
+    const current = room(roomId)
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
     // A name that matches nobody is a failure, not a silence — but only shout
     // when NOTHING matched: `#灯后 #灯1` reaching 灯后 is a normal message that
     // happens to contain a typo, not a failed hand-off.
-    const pool = agentMembers().filter((member) => member.name !== senderName)
+    const pool = agentMembers(roomId).filter((member) => member.name !== senderName)
     const tokens = mentionTokens(normalized)
     const missing = [...new Set(
       tokens
@@ -646,24 +646,25 @@ export function apply(ctx) {
         0,
         targetNames.filter((name) => name !== member.name),
         mode,
+        roomId,
       )
     }
   }
 
-  async function flushUserWindow(fromSeq) {
-    const current = room()
+  async function flushUserWindow(fromSeq, roomId = ROOM_ID) {
+    const current = room(roomId)
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
-    const batch = messages().filter((message) => message.seq >= fromSeq && message.kind === 'user')
+    const batch = messages(roomId).filter((message) => message.seq >= fromSeq && message.kind === 'user')
     if (batch.length === 0) return
     // Match on the text as written; see `symbolMentions` for why we do not fold.
     const plain = batch.map((message) => String(message.text ?? '')).join('\n')
-    await deliverBatch(batch, plain, undefined)
+    await deliverBatch(batch, plain, undefined, roomId)
   }
 
   // Agent messages now fan out too: everyone visible, reply optional. The mute
   // is the only brake, because a chain of "no one was named" replies can loop.
-  async function deliverAgentMessage(message) {
-    const current = room()
+  async function deliverAgentMessage(message, roomId = ROOM_ID) {
+    const current = room(roomId)
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
     if (current.muteAgentToAgent === true) {
       current.wakeLog.push({
@@ -679,7 +680,7 @@ export function apply(ctx) {
       return
     }
     const plain = String(message.text ?? '')
-    await deliverBatch([message], plain, message.from)
+    await deliverBatch([message], plain, message.from, roomId)
   }
 
   function routeMessage(message, roomId = ROOM_ID) {
@@ -703,7 +704,7 @@ export function apply(ctx) {
     void deliverAgentMessage(message)
   }
 
-  async function deliverTo(member, batch, highlighted, handoffDepth = 0, alsoNames, mode = 'chat') {
+  async function deliverTo(member, batch, highlighted, handoffDepth = 0, alsoNames, mode = 'chat', roomId = ROOM_ID) {
     // Last line of defence: whatever path produced this batch, a member is never
     // woken by its own message. Filtering at each caller missed one.
     batch = batch.filter((message) => message.from !== member.name)
@@ -721,7 +722,7 @@ export function apply(ctx) {
       pendingDelivery.set(member.sessionId, {
         fromSeq: Math.min(previous?.fromSeq ?? batch[0].seq, batch[0].seq),
       })
-      const busy = room()
+      const busy = room(roomId)
       if (busy !== undefined) {
         busy.wakeLog.push({
           at: Date.now(),
@@ -756,13 +757,13 @@ export function apply(ctx) {
         requestId,
         sessionId: member.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: pointerText(member, batch, highlighted, alsoNames, mode) }],
+        content: [{ type: 'text', text: pointerText(member, batch, highlighted, alsoNames, mode, roomId) }],
       }, AbortSignal.timeout(15000))
     } catch (error) {
       appendSystem(`${member.name} 没有响应（${shortError(error)}）`)
       return
     }
-    const record = { requestId, cursorBefore, startedAt, sawRunning: false, memberName: member.name, batch, handoffDepth: handoffDepth ?? 0 }
+    const record = { requestId, cursorBefore, startedAt, sawRunning: false, memberName: member.name, batch, handoffDepth: handoffDepth ?? 0, roomId }
     deliveries.set(member.sessionId, record)
     // Being handed a pointer IS seeing that message — its preview is right
     // there. Without this, a member that answered seq N still gets told later
@@ -771,7 +772,7 @@ export function apply(ctx) {
     if (!Number.isFinite(member.lastSeenSeq) || member.lastSeenSeq < seenTo) {
       member.lastSeenSeq = seenTo
     }
-    const current = room()
+    const current = room(roomId)
     if (current !== undefined) {
       // Persisted so a plugin reload mid-turn does not orphan the answer.
       current.inflight[member.sessionId] = { requestId, cursorBefore, startedAt, memberName: member.name }
@@ -796,7 +797,7 @@ export function apply(ctx) {
   }
 
   function clearInflight(sessionId) {
-    const current = room()
+    const current = room(roomId)
     if (current?.inflight === undefined || current.inflight[sessionId] === undefined) return
     delete current.inflight[sessionId]
     void persist()
@@ -855,13 +856,13 @@ export function apply(ctx) {
       pendingDelivery.delete(member.sessionId)
       // Never re-deliver the member its own message: that is how a broadcast
       // woke an agent with its own reply.
-      const fresh = messages().filter((message) => message.seq >= pending.fromSeq
+      const fresh = messages(roomId).filter((message) => message.seq >= pending.fromSeq
         && message.kind !== 'system'
         && message.from !== member.name)
       if (fresh.length > 0) {
         // The queued records for this member are about to be honoured; close
         // them out so the ledger does not keep stale "waiting" rows forever.
-        const current = room()
+        const current = room(roomId)
         let settled = false
         for (const entry of current?.wakeLog ?? []) {
           if (entry.member === member.name && entry.state === 'queued') {
@@ -878,14 +879,14 @@ export function apply(ctx) {
         const workHit = mentions(plain, member.name)
         const attentionHit = workHit ? false : attentionMentions(plain, member.name)
         const mode = workHit ? 'work' : attentionHit ? 'attention' : 'chat'
-        void deliverTo(member, fresh.slice(-5), workHit || attentionHit, 0, undefined, mode)
+        void deliverTo(member, fresh.slice(-5), workHit || attentionHit, 0, undefined, mode, roomId)
       }
     }
   }
 
   function markWake(requestId, state) {
     if (typeof requestId !== 'string') return
-    const current = room()
+    const current = room(roomId)
     const entry = (current?.wakeLog ?? []).find((item) => item.requestId === requestId)
     if (entry === undefined) return
     entry.state = state
@@ -898,7 +899,7 @@ export function apply(ctx) {
   // the failure that used to look exactly like success.
   function markWakeFields(requestId, patch) {
     if (typeof requestId !== 'string') return
-    const current = room()
+    const current = room(roomId)
     const entry = (current?.wakeLog ?? []).find((item) => item.requestId === requestId)
     if (entry === undefined) return
     Object.assign(entry, patch)
@@ -911,7 +912,7 @@ export function apply(ctx) {
       return
     }
     const message = appendMessage({ from: member.name, kind: 'agent', text, memberId: member.sessionId })
-    const current = room()
+    const current = room(roomId)
     if (current !== undefined) {
       current.receipts[member.name] = { seq: message.seq, at: Date.now() }
       void persist()
@@ -946,7 +947,7 @@ export function apply(ctx) {
         .filter((text) => text !== '')
       const text = texts[texts.length - 1]
       if (text === undefined) return
-      commitHarvest(member, text, record.requestId)
+      commitHarvest(member, text, record.requestId, record.roomId ?? ROOM_ID)
       return
     }
     // A long turn can push the pointer past the read window. Fall back to the
@@ -963,7 +964,7 @@ export function apply(ctx) {
       return
     }
     ctx.logger?.warn?.(`rooms: pointer for ${member.name} fell out of the window; harvested the last answer instead`)
-    commitHarvest(member, text, record.requestId)
+      commitHarvest(member, text, record.requestId, record.roomId ?? ROOM_ID)
   }
 
   function shortError(error) {
@@ -1680,9 +1681,9 @@ export function apply(ctx) {
       if (record !== undefined && record.handoffDepth === 0 && Array.isArray(record.batch)) {
         const fromUser = record.batch.some((message) => message.kind === 'user')
         if (fromUser) {
-          const others = agentMembers().filter((other) => other.active !== false && other.sessionId !== member.sessionId)
+          const others = agentMembers(record.roomId ?? ROOM_ID).filter((other) => other.active !== false && other.sessionId !== member.sessionId)
           for (const other of others) {
-            void deliverTo(other, record.batch, false, 1)
+            void deliverTo(other, record.batch, false, 1, undefined, 'chat', record.roomId ?? ROOM_ID)
           }
         }
       }
@@ -1808,9 +1809,26 @@ export function apply(ctx) {
     return () => clearTimeout(handle)
   })
 
+  let stillAnyRunning = false
+
   async function recoverInflight() {
     if (disposed) return
-    const current = room()
+    stillAnyRunning = false
+    // Every room keeps its own in-flight records; recover them all.
+    for (const roomId of Object.keys(db.rooms)) {
+      if (disposed) return
+      await recoverRoomInflight(roomId)
+    }
+    if (stillAnyRunning && recoverRetryTimer === null) {
+      recoverRetryTimer = setTimeout(() => {
+        recoverRetryTimer = null
+        void recoverInflight()
+      }, 30000)
+    }
+  }
+
+  async function recoverRoomInflight(roomId) {
+    const current = room(roomId)
     if (current?.inflight === undefined || Object.keys(current.inflight).length === 0) return
     let stillRunning = false
     for (const [sessionId, item] of Object.entries(current.inflight)) {
@@ -1829,6 +1847,7 @@ export function apply(ctx) {
         // Still mid-turn: keep the record and check again instead of dropping
         // the answer this turn is about to produce.
         stillRunning = true
+        stillAnyRunning = true
         continue
       }
       try {
@@ -1845,12 +1864,6 @@ export function apply(ctx) {
       delete current.inflight[sessionId]
     }
     void persist()
-    if (stillRunning && recoverRetryTimer === null) {
-      recoverRetryTimer = setTimeout(() => {
-        recoverRetryTimer = null
-        void recoverInflight()
-      }, 30000)
-    }
   }
 
   ctx.logger?.info?.(`rooms: ready, ${agentMembers().length} agent member(s), ${messages().length} message(s)`)
