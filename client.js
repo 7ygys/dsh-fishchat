@@ -837,23 +837,25 @@ window.__ModuleLoader__.load({
         const before = range.cloneRange()
         before.setStart(node, 0)
         const text = before.toString()
-        const at = text.lastIndexOf('@')
-        // Both the half-width ¥ and the full-width ￥ must trigger.
-        const hash = Math.max(text.lastIndexOf('#'), text.lastIndexOf('¥'), text.lastIndexOf('￥'))
-        const atOpen = at >= 0 && !/\s/.test(text.slice(at + 1))
-        const hashOpen = hash >= 0 && !/\s/.test(text.slice(hash + 1))
+        // Detect on an NFKC-folded copy so full-width ＃＠￥ work too. The text
+        // that gets stored stays exactly as typed; only detection is folded.
+        const norm = text.normalize('NFKC')
+        const at = norm.lastIndexOf('@')
+        const hash = Math.max(norm.lastIndexOf('#'), norm.lastIndexOf('¥'))
+        const atOpen = at >= 0 && !/\s/.test(norm.slice(at + 1))
+        const hashOpen = hash >= 0 && !/\s/.test(norm.slice(hash + 1))
         // Whichever trigger is closer to the caret wins.
         if (atOpen && at > hash) {
           setMentionPicker(null)
-          void loadFiles(atPicker?.dir ?? '', text.slice(at + 1), at)
+          void loadFiles(atPicker?.dir ?? '', norm.slice(at + 1), at)
           return
         }
         if (hashOpen) {
           if (atPicker !== null) setAtPicker(null)
-          const query = text.slice(hash + 1)
+          const query = norm.slice(hash + 1)
           const items = (status?.members ?? []).filter((member) => member.kind === 'agent'
             && (query === '' || member.name.includes(query)))
-          setMentionPicker({ symbol: text[hash], query, items })
+          setMentionPicker({ symbol: norm[hash], query, items })
           return
         }
         if (atPicker !== null) setAtPicker(null)
