@@ -509,6 +509,21 @@ window.__ModuleLoader__.load({
       const fileInputRef = useRef(null)
       const [bgPanel, setBgPanel] = useState(false)
       const bgInputRef = useRef(null)
+      // Notes: a sliding sidebar with its own storage, width remembered locally.
+      const [notesOpen, setNotesOpen] = useState(false)
+      const [notes, setNotes] = useState([])
+      const [activeNote, setActiveNote] = useState(null)
+      const [noteDraft, setNoteDraft] = useState({ title: '', text: '' })
+      const [notesWidth, setNotesWidth] = useState(() => {
+        try {
+          const saved = Number(localStorage.getItem('dsh-rooms:notes-width') ?? 320)
+          return Number.isFinite(saved) ? Math.min(640, Math.max(220, saved)) : 320
+        } catch {
+          return 320
+        }
+      })
+      const notesWidthRef = useRef(notesWidth)
+      const noteSaveTimer = useRef(null)
       const atStartRef = useRef(0)
       const editorRef = useRef(null)
       // Directory this user's `@path` tokens are relative to.
@@ -830,6 +845,91 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const selectNote = (note) => {
+        setActiveNote(note)
+        setNoteDraft({ title: note.title, text: note.text })
+      }
+
+      const createNote = async () => {
+        try {
+          const data = await postJson('/notes', {})
+          setNotes((current) => [data.note, ...current])
+          selectNote(data.note)
+        } catch (error) {
+          setError(String(error?.message ?? error))
+        }
+      }
+
+      const updateNote = (patch) => {
+        setNoteDraft((current) => {
+          const next = { ...current, ...patch }
+          if (activeNote !== null) {
+            if (noteSaveTimer.current !== null) clearTimeout(noteSaveTimer.current)
+            noteSaveTimer.current = setTimeout(() => {
+              void postJson(`/notes/${activeNote.id}`, { title: next.title, text: next.text }).catch(() => {})
+            }, 700)
+          }
+          return next
+        })
+        if (activeNote !== null) {
+          setNotes((current) => current.map((note) => (note.id === activeNote.id
+            ? { ...note, ...patch, updatedAt: Date.now() }
+            : note)))
+        }
+      }
+
+      const deleteNote = async () => {
+        if (activeNote === null) return
+        try {
+          await fetch(`/notes/${activeNote.id}`, { method: 'DELETE' })
+          const rest = notes.filter((note) => note.id !== activeNote.id)
+          setNotes(rest)
+          if (rest.length > 0) selectNote(rest[0])
+          else {
+            setActiveNote(null)
+            setNoteDraft({ title: '', text: '' })
+          }
+        } catch (error) {
+          setError(String(error?.message ?? error))
+        }
+      }
+
+      const startNotesResize = (event) => {
+        event.preventDefault()
+        const startX = event.clientX
+        const startWidth = notesWidth
+        const move = (moveEvent) => {
+          const next = Math.min(640, Math.max(220, startWidth + (moveEvent.clientX - startX)))
+          notesWidthRef.current = next
+          setNotesWidth(next)
+        }
+        const up = () => {
+          window.removeEventListener('mousemove', move)
+          window.removeEventListener('mouseup', up)
+          try {
+            localStorage.setItem('dsh-rooms:notes-width', String(notesWidthRef.current))
+          } catch {
+            /* storage unavailable */
+          }
+        }
+        window.addEventListener('mousemove', move)
+        window.addEventListener('mouseup', up)
+      }
+
+      useEffect(() => {
+        if (!notesOpen) return undefined
+        let alive = true
+        getJson('/notes')
+          .then((data) => {
+            if (!alive) return
+            const list = data.notes ?? []
+            setNotes(list)
+            if (list.length > 0) selectNote(list[0])
+          })
+          .catch(() => {})
+        return () => { alive = false }
+      }, [notesOpen])
+
       const uploadBackground = async (file) => {
         if (file === undefined || file === null) return
         try {
@@ -1054,6 +1154,16 @@ window.__ModuleLoader__.load({
         status.wakeStats.failed > 0 ? `失败 ${status.wakeStats.failed}` : null,
       ].filter(Boolean).join(' · ')),
       h('button', {
+        onClick: () => setNotesOpen(!notesOpen),
+        title: '笔记',
+        style: {
+          padding: '4px 8px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: notesOpen ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-layer-1)',
+          color: 'inherit',
+        },
+      }, '笔记'),
+      h('button', {
         onClick: () => setBgPanel(!bgPanel),
         title: '聊天背景',
         style: { padding: '4px 8px', fontSize: 12, borderRadius: 4, border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', cursor: 'pointer', color: 'inherit' },
@@ -1081,6 +1191,81 @@ window.__ModuleLoader__.load({
         },
       }, muted ? '鱼静默' : '鱼可叫')
       ),
+      // body: notes sidebar + messages
+      h('div', { style: { display: 'flex', flex: 1, minHeight: 0 } },
+      notesOpen && h('div', {
+        style: {
+          width: notesWidth, flex: '0 0 auto', minWidth: 0, display: 'flex', flexDirection: 'column',
+          background: 'var(--dsw-alias-bg-layer-1)', borderRight: '1px solid var(--dsw-alias-border-l1)',
+        },
+      },
+      h('div', {
+        style: {
+          display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
+          borderBottom: '1px solid var(--dsw-alias-border-l1)',
+        },
+      },
+      h('span', { style: { flex: 1, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '笔记'),
+      h('button', {
+        onClick: () => { void createNote() },
+        style: {
+          padding: '2px 8px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+          border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)',
+          color: 'var(--dsw-alias-label-primary)',
+        },
+      }, '新建'),
+      h('button', {
+        onClick: () => { void deleteNote() },
+        disabled: activeNote === null,
+        style: {
+          padding: '2px 8px', fontSize: 11, borderRadius: 4, cursor: activeNote === null ? 'default' : 'pointer',
+          border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)',
+          color: 'var(--dsw-alias-label-secondary)', opacity: activeNote === null ? 0.5 : 1,
+        },
+      }, '删除')
+      ),
+      h('div', { style: { maxHeight: 130, overflowY: 'auto', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+        notes.length === 0 && h('div', {
+          style: { padding: '8px 10px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
+        }, '还没有笔记，点「新建」'),
+        notes.map((note) => h('div', {
+          key: note.id,
+          onClick: () => selectNote(note),
+          style: {
+            padding: '5px 9px', cursor: 'pointer', fontSize: 12,
+            background: activeNote?.id === note.id ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          },
+        }, note.title || '无标题'))
+      ),
+      h('input', {
+        value: noteDraft.title,
+        onChange: (event) => updateNote({ title: event.target.value }),
+        placeholder: '标题',
+        style: {
+          margin: 8, padding: '4px 8px', fontSize: 13, fontWeight: 600, borderRadius: 4,
+          border: '1px solid var(--dsw-alias-border-l1)', outline: 'none',
+          background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
+        },
+      }),
+      h('textarea', {
+        value: noteDraft.text,
+        onChange: (event) => updateNote({ text: event.target.value }),
+        placeholder: '正文…（自动保存）',
+        style: {
+          flex: 1, minHeight: 0, margin: '0 8px 8px', padding: '6px 8px', fontSize: 13,
+          lineHeight: 1.6, resize: 'none', borderRadius: 4, outline: 'none',
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
+          fontFamily: 'inherit',
+        },
+      })
+      ),
+      notesOpen && h('div', {
+        onMouseDown: startNotesResize,
+        title: '拖动调节宽度',
+        style: { width: 5, flex: '0 0 auto', cursor: 'col-resize', background: 'transparent' },
+      }),
       // message list
       h('div', {
         ref: listRef,
@@ -1113,6 +1298,7 @@ window.__ModuleLoader__.load({
       messages.length === 0 && h('div', {
         style: { textAlign: 'center', color: 'var(--dsw-alias-label-secondary)', fontSize: 13, marginTop: 40 },
       }, '群里还没有消息。先点右上角「成员」把两条鱼拉进来。')
+      )
       ),
       // ack flash
       ack !== null && status !== null && h('div', {

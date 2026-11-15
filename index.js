@@ -288,6 +288,46 @@ export function apply(ctx) {
     return join(dirname(FILE), 'rooms-files')
   }
 
+  // Notes live in their own file: they are not room messages and should not
+  // bloat the room log or share its trimming.
+  function notesPath() {
+    return join(dirname(FILE), 'rooms-notes.json')
+  }
+
+  let notesCache = null
+
+  function loadNotes() {
+    if (notesCache !== null) return notesCache
+    try {
+      if (existsSync(notesPath())) {
+        const parsed = JSON.parse(readFileSync(notesPath(), 'utf8'))
+        notesCache = Array.isArray(parsed?.notes) ? parsed.notes.filter((note) => note && typeof note.id === 'string') : []
+      }
+    } catch {
+      notesCache = []
+    }
+    if (notesCache === null) notesCache = []
+    return notesCache
+  }
+
+  function saveNotes() {
+    try {
+      mkdirSync(dirname(FILE), { recursive: true })
+      writeFileSync(notesPath(), JSON.stringify({ notes: loadNotes() }, null, 2), 'utf8')
+    } catch {
+      /* notes are best-effort; a failed write must not break the room */
+    }
+  }
+
+  function noteShape(note) {
+    return {
+      id: note.id,
+      title: String(note.title ?? '') || '无标题',
+      text: String(note.text ?? ''),
+      updatedAt: Number.isFinite(note.updatedAt) ? note.updatedAt : 0,
+    }
+  }
+
   // Raw bytes, for uploads: the JSON body reader is no use for a PNG.
   function readBodyBuffer(req) {
     return new Promise((resolve, reject) => {
@@ -1622,6 +1662,55 @@ export function apply(ctx) {
   })
 
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/rooms', handler: route }))
+  ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/notes', handler: notesRoute }))
+
+  async function notesRoute(req, res) {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const path = url.pathname.replace(/\/+$/, '') || '/notes'
+    const method = (req.method ?? 'GET').toUpperCase()
+    try {
+      if (method === 'GET' && path === '/notes') {
+        return json(res, 200, { notes: loadNotes().map(noteShape).sort((a, b) => b.updatedAt - a.updatedAt) })
+      }
+      if (method === 'POST' && path === '/notes') {
+        const note = noteShape({
+          id: randomUUID(),
+          title: '',
+          text: '',
+          updatedAt: Date.now(),
+        })
+        loadNotes().push(note)
+        saveNotes()
+        return json(res, 200, { note })
+      }
+      if (path.startsWith('/notes/')) {
+        const id = path.slice('/notes/'.length)
+        const notes = loadNotes()
+        const index = notes.findIndex((note) => note.id === id)
+        if (index < 0) return json(res, 404, { error: 'no such note' })
+        if (method === 'POST') {
+          const body = await readBody(req)
+          const current = notes[index]
+          notes[index] = noteShape({
+            ...current,
+            title: typeof body.title === 'string' ? body.title.slice(0, 120) : current.title,
+            text: typeof body.text === 'string' ? body.text.slice(0, 200000) : current.text,
+            updatedAt: Date.now(),
+          })
+          saveNotes()
+          return json(res, 200, { note: notes[index] })
+        }
+        if (method === 'DELETE') {
+          notes.splice(index, 1)
+          saveNotes()
+          return json(res, 200, { ok: true })
+        }
+      }
+      return json(res, 404, { error: 'not found' })
+    } catch (error) {
+      return json(res, 500, { error: String(error?.message ?? error) })
+    }
+  }
   ctx.effect(() => ctx.tools.register(withCleanResult(sayTool)))
   ctx.effect(() => ctx.tools.register(withCleanResult(readTool)))
   ctx.effect(() => ctx.tools.register(withCleanResult(ackTool)))
