@@ -1206,6 +1206,7 @@ window.__ModuleLoader__.load({
           /* storage unavailable: start empty */
         }
         if (notesOpen) loadNotesForRoom(id)
+        void loadRooms()
         void loadInitial()
         void refreshStatus()
       }
@@ -1224,6 +1225,13 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         void loadRooms()
+      }, [loadRooms])
+
+      // The room list carries unread badges, so it has to keep refreshing while
+      // the panel is open — otherwise a badge stays lit until the panel remounts.
+      useEffect(() => {
+        const handle = setInterval(() => { void loadRooms() }, 5000)
+        return () => clearInterval(handle)
       }, [loadRooms])
 
       const uploadFiles = async (fileList) => {
