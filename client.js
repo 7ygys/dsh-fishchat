@@ -187,24 +187,24 @@ window.__ModuleLoader__.load({
           return h('div', { key: index, style: { minHeight: '1.2em' } }, ...renderWithRefs(line))
         }
         const { body, seq } = splitQuoteSeq(line.slice(2))
-        return h('div', {
-          key: index,
-          style: {
-            color: 'var(--dsw-alias-brand-primary)',
-            borderLeft: '2px solid var(--dsw-alias-brand-primary)',
-            paddingLeft: 6,
-            margin: '1px 0',
-            opacity: 0.92,
-            display: 'flex',
-            gap: 6,
-            alignItems: 'baseline',
-          },
-        },
-        h('span', { style: { flex: 1, minWidth: 0 } }, ...renderWithRefs(body)),
-        seq !== null && h('span', {
-          title: `引用的是 seq ${seq}`,
-          style: { fontSize: 10, opacity: 0.65, whiteSpace: 'nowrap' },
-        }, `#${seq}`)
+        // Keep it a compressed blue chip after sending, not a wall of text:
+        // one line, ellipsised, full text on hover.
+        return h('div', { key: index, style: { margin: '2px 0', maxWidth: '100%' } },
+          h('span', {
+            title: body,
+            style: {
+              display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap', verticalAlign: 'bottom', padding: '1px 7px', borderRadius: 4,
+              fontSize: 12, lineHeight: '18px',
+              color: 'var(--dsw-alias-brand-primary)',
+              background: 'rgba(43,127,212,.14)',
+              borderLeft: '2px solid var(--dsw-alias-brand-primary)',
+            },
+          }, body),
+          seq !== null && h('span', {
+            title: `引用的是 seq ${seq}`,
+            style: { fontSize: 10, opacity: 0.6, marginLeft: 5, whiteSpace: 'nowrap' },
+          }, `#${seq}`)
         )
       })
     }
