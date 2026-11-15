@@ -392,7 +392,9 @@ window.__ModuleLoader__.load({
         items.length === 0 && h('div', { style: { padding: 16, color: 'var(--dsw-alias-label-secondary)' } }, '没有可选会话'),
         items.map((item) => {
           const picked = selected[item.sessionId] !== undefined
-          const disabled = item.member && !picked
+          // Only block adding a fourth member; anything already picked can be
+          // unticked and re-ticked freely.
+          const disabled = !picked && Object.keys(selected).length >= 3
           return h('div', {
             key: item.sessionId,
             onClick: () => { if (!disabled) toggle(item) },
@@ -462,6 +464,8 @@ window.__ModuleLoader__.load({
       const [hasText, setHasText] = useState(false)
       // `@` picker: open while the caret sits in an unfinished `@token`.
       const [atPicker, setAtPicker] = useState(null) // { dir, items, query, start }
+      // `#name` / `¥name` completion: same idea, members instead of files.
+      const [mentionPicker, setMentionPicker] = useState(null) // { symbol, query, items }
       const atStartRef = useRef(0)
       const editorRef = useRef(null)
       // Directory this user's `@path` tokens are relative to.
@@ -509,6 +513,21 @@ window.__ModuleLoader__.load({
         const handle = setTimeout(() => setAck(null), 6000)
         return () => clearTimeout(handle)
       }, [ack])
+
+      // Restore whatever was half-typed before the user left the room.
+      useEffect(() => {
+        const node = editorRef.current
+        if (node === null) return
+        try {
+          const saved = localStorage.getItem('dsh-rooms:draft')
+          if (saved !== null && saved !== '') {
+            node.innerHTML = saved
+            setHasText(true)
+          }
+        } catch {
+          /* storage unavailable: start empty */
+        }
+      }, [])
 
       // Heartbeat: while the group panel is open, remember it. A plugin reload
       // removes the `main` entry, which makes the layout fall back to the
@@ -586,6 +605,11 @@ window.__ModuleLoader__.load({
         if (text === '') return
         if (editorRef.current !== null) editorRef.current.innerHTML = ''
         setHasText(false)
+        try {
+          localStorage.removeItem('dsh-rooms:draft')
+        } catch {
+          /* storage unavailable */
+        }
         stickRef.current = true
         try {
           await postJson(`${ROOM}/say`, {
@@ -747,8 +771,59 @@ window.__ModuleLoader__.load({
         insertChip('quote', snippet, snippet, message.seq)
       }
 
+      const insertText = (value) => {
+        const node = editorRef.current
+        if (node === null) return
+        node.focus()
+        let range = caretRange()
+        if (range === null) {
+          range = document.createRange()
+          range.selectNodeContents(node)
+          range.collapse(false)
+        }
+        range.deleteContents()
+        const textNode = document.createTextNode(value)
+        range.insertNode(textNode)
+        const after = document.createRange()
+        after.setStartAfter(textNode)
+        after.collapse(true)
+        const selection = window.getSelection()
+        selection?.removeAllRanges()
+        selection?.addRange(after)
+        setHasText(readEditor() !== '')
+        try {
+          localStorage.setItem('dsh-rooms:draft', editorRef.current?.innerHTML ?? '')
+        } catch {
+          /* storage unavailable */
+        }
+      }
+
+      const pickMention = (name) => {
+        if (mentionPicker === null) return
+        const range = caretRange()
+        if (range !== null) {
+          const back = mentionPicker.query.length + 1
+          try {
+            const cut = document.createRange()
+            cut.setStart(range.startContainer, Math.max(0, range.startOffset - back))
+            cut.setEnd(range.startContainer, range.startOffset)
+            cut.deleteContents()
+          } catch {
+            /* caret straddled nodes */
+          }
+        }
+        const symbol = mentionPicker.symbol
+        setMentionPicker(null)
+        insertText(`${symbol}${name} `)
+      }
+
       const onEditorInput = () => {
         setHasText(readEditor() !== '')
+        try {
+          localStorage.setItem('dsh-rooms:draft', editorRef.current?.innerHTML ?? '')
+        } catch {
+          /* storage unavailable */
+        }
         const range = caretRange()
         const node = editorRef.current
         if (range === null || node === null) {
@@ -759,12 +834,25 @@ window.__ModuleLoader__.load({
         before.setStart(node, 0)
         const text = before.toString()
         const at = text.lastIndexOf('@')
-        const inside = at >= 0 && !/\s/.test(text.slice(at + 1))
-        if (!inside) {
-          if (atPicker !== null) setAtPicker(null)
+        const hash = Math.max(text.lastIndexOf('#'), text.lastIndexOf('¥'))
+        const atOpen = at >= 0 && !/\s/.test(text.slice(at + 1))
+        const hashOpen = hash >= 0 && !/\s/.test(text.slice(hash + 1))
+        // Whichever trigger is closer to the caret wins.
+        if (atOpen && at > hash) {
+          setMentionPicker(null)
+          void loadFiles(atPicker?.dir ?? '', text.slice(at + 1), at)
           return
         }
-        void loadFiles(atPicker?.dir ?? '', text.slice(at + 1), at)
+        if (hashOpen) {
+          if (atPicker !== null) setAtPicker(null)
+          const query = text.slice(hash + 1)
+          const items = (status?.members ?? []).filter((member) => member.kind === 'agent'
+            && (query === '' || member.name.includes(query)))
+          setMentionPicker({ symbol: text[hash], query, items })
+          return
+        }
+        if (atPicker !== null) setAtPicker(null)
+        if (mentionPicker !== null) setMentionPicker(null)
       }
 
       const pickEntry = (entry) => {
@@ -934,6 +1022,30 @@ window.__ModuleLoader__.load({
       h('span', { style: { opacity: 0.6 } }, entry.dir ? '▸' : '·'),
       h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
       entry.dir && h('span', { style: { fontSize: 10, color: 'var(--dsw-alias-label-secondary)' } }, '进入')
+      ))
+      ),
+      // `#` / `¥` member completion
+      mentionPicker !== null && mentionPicker.items.length > 0 && h('div', {
+        style: {
+          flex: '0 0 auto', maxHeight: 150, overflowY: 'auto', margin: '0 8px 4px',
+          background: 'var(--dsw-alias-bg-overlay)',
+          border: '1px solid var(--dsw-alias-border-l2)',
+          borderRadius: 6, boxShadow: '0 4px 16px rgba(0,0,0,.18)',
+        },
+      },
+      h('div', {
+        style: {
+          padding: '4px 10px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)',
+          borderBottom: '1px solid var(--dsw-alias-border-l1)',
+        },
+      }, mentionPicker.symbol === '#' ? '派活给（必须回）' : '叫一声（不必回）'),
+      mentionPicker.items.map((member) => h('div', {
+        key: member.name,
+        onMouseDown: (event) => { event.preventDefault(); pickMention(member.name) },
+        style: { padding: '5px 10px', fontSize: 12, cursor: 'pointer', display: 'flex', gap: 6, alignItems: 'center' },
+      },
+      h(Avatar, { name: member.name, size: 18 }),
+      h('span', null, `${mentionPicker.symbol}${member.name}`)
       ))
       ),
       // composer
