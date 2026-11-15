@@ -1028,6 +1028,9 @@ export function apply(ctx) {
         title: current?.title ?? '群',
         wakeEnabled: current?.wakeEnabled !== false,
         muteAgentToAgent: current?.muteAgentToAgent === true,
+        background: current?.background !== null && typeof current?.background === 'object'
+          ? { type: current.background.type === 'image' ? 'image' : 'color', value: String(current.background.value ?? '') }
+          : { type: 'color', value: '' },
       },
       seq: db.seq,
       earliestSeq: db.earliestSeq,
