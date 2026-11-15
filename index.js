@@ -796,7 +796,7 @@ export function apply(ctx) {
     void watchDelivery(member, record)
   }
 
-  function clearInflight(sessionId) {
+  function clearInflight(sessionId, roomId = ROOM_ID) {
     const current = room(roomId)
     if (current?.inflight === undefined || current.inflight[sessionId] === undefined) return
     delete current.inflight[sessionId]
@@ -847,7 +847,7 @@ export function apply(ctx) {
     try {
       await harvest(member, record)
     } finally {
-      clearInflight(member.sessionId)
+      clearInflight(member.sessionId, record.roomId ?? ROOM_ID)
     }
     // Messages that arrived while this turn was running were only remembered,
     // never sent. Deliver them now that the member is free again.
@@ -906,12 +906,12 @@ export function apply(ctx) {
     void persist()
   }
 
-  function commitHarvest(member, text, requestId) {
+  function commitHarvest(member, text, requestId, roomId = ROOM_ID) {
     if (CONFIRM_ONLY.test(text)) {
       markWake(requestId, 'silent')
       return
     }
-    const message = appendMessage({ from: member.name, kind: 'agent', text, memberId: member.sessionId })
+    const message = appendMessage({ from: member.name, kind: 'agent', text, memberId: member.sessionId, roomId })
     const current = room(roomId)
     if (current !== undefined) {
       current.receipts[member.name] = { seq: message.seq, at: Date.now() }
@@ -1122,7 +1122,7 @@ export function apply(ctx) {
     return null
   }
 
-  async function handleCandidates() {
+  async function handleCandidates(roomId = ROOM_ID) {
     const result = await ctx.sessionController.list({}, AbortSignal.timeout(8000))
     const chosen = new Set(agentMembers(roomId).map((member) => member.sessionId))
     const items = (result?.items ?? [])
@@ -1139,7 +1139,7 @@ export function apply(ctx) {
     return { items }
   }
 
-  async function handleMessages(query) {
+  async function handleMessages(query, roomId = ROOM_ID) {
     const all = messages(roomId)
     const sinceRaw = query.get('since')
     const beforeRaw = query.get('before')
@@ -1241,13 +1241,13 @@ export function apply(ctx) {
         return json(res, 200, { ok: true })
       }
       if (method === 'GET' && sub === '/messages') {
-        return json(res, 200, await handleMessages(url.searchParams))
+        return json(res, 200, await handleMessages(url.searchParams, roomId))
       }
       if (method === 'GET' && sub === '/status') {
         return json(res, 200, await handleStatus(roomId))
       }
       if (method === 'GET' && sub === '/candidates') {
-        return json(res, 200, await handleCandidates())
+        return json(res, 200, await handleCandidates(roomId))
       }
       if (method === 'GET' && sub === '/files') {
         // Backs the `@` picker: a plain directory listing under the default
