@@ -950,6 +950,7 @@ window.__ModuleLoader__.load({
         `回 ${status.wakeStats.replied}`,
         status.wakeStats.noTurn > 0 ? `没醒 ${status.wakeStats.noTurn}` : null,
         status.wakeStats.missed > 0 ? `没匹配 ${status.wakeStats.missed}` : null,
+        status.wakeStats.failed > 0 ? `失败 ${status.wakeStats.failed}` : null,
       ].filter(Boolean).join(' · ')),
       h('button', {
         onClick: () => setPicker(true),

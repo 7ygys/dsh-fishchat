@@ -27,6 +27,9 @@ const KEEP_DAYS = 7
 const MAX_MESSAGE_CHARS = 8000
 const WATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000
 const LONG_TURN_NOTICE_MS = 10 * 60 * 1000
+// A `queued` record that never turns into a delivery is a hole in the ledger.
+// After this long it becomes a failure the user can see.
+const QUEUED_TIMEOUT_MS = 10 * 60 * 1000
 const POINTER_PREFIX = 'room-'
 const AGENT_HORN_EVERY = 20
 // How many missed messages one pointer may ask a member to catch up on.
@@ -631,6 +634,7 @@ export function apply(ctx) {
           at: Date.now(),
           requestId: `queued-${randomUUID()}`,
           member: member.name,
+          seqFrom: batch[0].seq,
           state: 'queued',
           delivery: 'queued',
           wake: 'not_required',
@@ -762,6 +766,19 @@ export function apply(ctx) {
         && message.kind !== 'system'
         && message.from !== member.name)
       if (fresh.length > 0) {
+        // The queued records for this member are about to be honoured; close
+        // them out so the ledger does not keep stale "waiting" rows forever.
+        const current = room()
+        let settled = false
+        for (const entry of current?.wakeLog ?? []) {
+          if (entry.member === member.name && entry.state === 'queued') {
+            entry.state = 'delivered'
+            entry.delivery = 'delivered'
+            entry.detail = 'requeued'
+            settled = true
+          }
+        }
+        if (settled) void persist()
         const plain = fresh.map((message) => String(message.text ?? '')).join('\n')
         // `#` means work — it must keep that meaning on every path, including
         // this catch-up one. `¥` only means "you were called".
@@ -971,6 +988,7 @@ export function apply(ctx) {
         missed: todayMissed.length,
         // Accepted, but no turn ever started — the failure that looks like success.
         noTurn: todayWakes.filter((entry) => entry.wake === 'no_turn').length,
+        failed: todayWakes.filter((entry) => entry.delivery === 'failed').length,
       },
       recentWakes: (current?.wakeLog ?? []).slice(-8),
     }
@@ -1448,6 +1466,30 @@ export function apply(ctx) {
       },
     }
   }
+
+  // A queued record that never got honoured must not sit in the ledger looking
+  // like "still pending": after QUEUED_TIMEOUT_MS it becomes a visible failure.
+  function sweepQueued() {
+    const current = room()
+    if (current?.wakeLog === undefined) return
+    const cutoff = Date.now() - QUEUED_TIMEOUT_MS
+    let changed = false
+    for (const entry of current.wakeLog) {
+      if (entry.state === 'queued' && entry.at < cutoff) {
+        entry.state = 'failed'
+        entry.delivery = 'failed'
+        entry.detail = 'timeout'
+        entry.doneAt = Date.now()
+        changed = true
+      }
+    }
+    if (changed) void persist()
+  }
+
+  ctx.effect(() => {
+    const handle = setInterval(() => { sweepQueued() }, 60 * 1000)
+    return () => clearInterval(handle)
+  })
 
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/rooms', handler: route }))
   ctx.effect(() => ctx.tools.register(withCleanResult(sayTool)))
