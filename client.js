@@ -628,6 +628,23 @@ window.__ModuleLoader__.load({
       const [roomList, setRoomList] = useState([])
       const [roomsOpen, setRoomsOpen] = useState(false)
       const [, bumpRoom] = useState(0)
+      const [settingsOpen, setSettingsOpen] = useState(false)
+      const [fontScale, setFontScale] = useState(() => {
+        try {
+          const saved = Number(localStorage.getItem('dsh-rooms:font-scale') ?? 1)
+          return Number.isFinite(saved) ? Math.min(1.4, Math.max(0.8, saved)) : 1
+        } catch {
+          return 1
+        }
+      })
+      const [themeMode, setThemeMode] = useState(() => {
+        try {
+          const saved = localStorage.getItem('dsh-rooms:theme') ?? 'auto'
+          return saved === 'dark' ? 'dark' : 'auto'
+        } catch {
+          return 'auto'
+        }
+      })
       // Notes: a sliding sidebar with its own storage, width remembered locally.
       const [notesOpen, setNotesOpen] = useState(false)
       const [notes, setNotes] = useState([])
@@ -1325,6 +1342,55 @@ window.__ModuleLoader__.load({
       const roomBackground = bg?.type === 'image' && bg.value !== ''
         ? `url("${roomBase()}/file/${bg.value}") center / cover no-repeat`
         : (bg?.value !== '' && bg?.value !== undefined ? bg.value : 'var(--dsw-alias-bg-base)')
+      // Dark mode is a local override of the theme tokens, so the room can be
+      // dark while the rest of the harness stays light.
+      const themeVars = themeMode === 'dark'
+        ? {
+          '--dsw-alias-bg-base': '#1b1b1d',
+          '--dsw-alias-bg-layer-1': '#242427',
+          '--dsw-alias-bg-layer-2': '#2e2e32',
+          '--dsw-alias-bg-overlay': '#2e2e32',
+          '--dsw-alias-label-primary': '#ececec',
+          '--dsw-alias-label-secondary': '#a0a0a0',
+          '--dsw-alias-border-l1': '#3a3a3f',
+          '--dsw-alias-border-l2': '#4a4a52',
+        }
+        : {}
+      const setFontScalePersist = (next) => {
+        const value = Math.min(1.4, Math.max(0.8, Math.round(next * 10) / 10))
+        setFontScale(value)
+        try { localStorage.setItem('dsh-rooms:font-scale', String(value)) } catch { /* storage unavailable */ }
+      }
+      const setThemePersist = (next) => {
+        setThemeMode(next)
+        try { localStorage.setItem('dsh-rooms:theme', next) } catch { /* storage unavailable */ }
+      }
+      const deleteThisRoom = async () => {
+        if (activeRoomId === 'r1') {
+          setError('默认群不能删除')
+          return
+        }
+        // eslint-disable-next-line no-alert
+        const ok = typeof window.confirm === 'function'
+          ? window.confirm(`删除「${status?.room?.title ?? '这个群'}」？消息记录会一起删掉，不能恢复。`)
+          : false
+        if (!ok) return
+        try {
+          await fetch(`/rooms/${activeRoomId}`, { method: 'DELETE' })
+          activeRoomId = 'r1'
+          try { localStorage.setItem('dsh-rooms:active', 'r1') } catch { /* storage unavailable */ }
+          setRoomsOpen(false)
+          setSettingsOpen(false)
+          bumpRoom((value) => value + 1)
+          setMessages([])
+          lastSeqRef.current = 0
+          void loadRooms()
+          void loadInitial()
+          void refreshStatus()
+        } catch (error) {
+          setError(`删群失败：${String(error?.message ?? error)}`)
+        }
+      }
 
       return h('div', {
         style: { display: 'flex', height: '100%', minHeight: 0 },
@@ -1351,6 +1417,8 @@ window.__ModuleLoader__.load({
           flex: 1, minWidth: 0,
           position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
           background: roomBackground, color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit',
+          ...themeVars,
+          zoom: fontScale,
           outline: dragging ? '2px dashed var(--dsw-alias-brand-primary)' : 'none', outlineOffset: -6,
         },
         onDragOver: (event) => {
@@ -1414,6 +1482,16 @@ window.__ModuleLoader__.load({
         status.wakeStats.missed > 0 ? `没匹配 ${status.wakeStats.missed}` : null,
         status.wakeStats.failed > 0 ? `失败 ${status.wakeStats.failed}` : null,
       ].filter(Boolean).join(' · ')),
+      h('button', {
+        onClick: () => setSettingsOpen(!settingsOpen),
+        title: '设置',
+        style: {
+          padding: '3px 8px', fontSize: 14, borderRadius: 4, cursor: 'pointer', lineHeight: '16px',
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: settingsOpen ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-layer-1)',
+          color: 'inherit',
+        },
+      }, '⚙'),
       h('button', {
         onClick: () => setNotesOpen(!notesOpen),
         title: '笔记',
@@ -1612,6 +1690,68 @@ window.__ModuleLoader__.load({
         style: { border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', padding: 0, fontSize: 12 },
       }, '×')
       ))
+      ),
+      // settings
+      settingsOpen && h('div', {
+        style: {
+          position: 'absolute', top: 48, right: 12, zIndex: 40, width: 240,
+          background: 'var(--dsw-alias-bg-overlay)', border: '1px solid var(--dsw-alias-border-l2)',
+          borderRadius: 8, padding: 10, boxShadow: '0 8px 24px rgba(0,0,0,.3)',
+          display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12,
+        },
+      },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+        h('span', { style: { flex: 1, color: 'var(--dsw-alias-label-secondary)' } }, '字号'),
+        ['0.9', '1', '1.15', '1.3'].map((value) => h('button', {
+          key: value,
+          onClick: () => setFontScalePersist(Number(value)),
+          style: {
+            padding: '2px 7px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+            border: '1px solid var(--dsw-alias-border-l2)',
+            background: Math.abs(fontScale - Number(value)) < 0.01 ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-base)',
+            color: 'inherit',
+          },
+        }, Number(value) < 1 ? 'A-' : Number(value) > 1 ? 'A+' : 'A'))
+      ),
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+        h('span', { style: { flex: 1, color: 'var(--dsw-alias-label-secondary)' } }, '主题'),
+        h('button', {
+          onClick: () => setThemePersist(themeMode === 'dark' ? 'auto' : 'dark'),
+          style: {
+            padding: '3px 10px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+            border: '1px solid var(--dsw-alias-border-l2)',
+            background: themeMode === 'dark' ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-base)',
+            color: 'inherit',
+          },
+        }, themeMode === 'dark' ? '深色（点击还原）' : '跟随 Harness')
+      ),
+      h('div', { style: { height: 1, background: 'var(--dsw-alias-border-l1)' } }),
+      h('button', {
+        onClick: () => { setSettingsOpen(false); setPicker(true) },
+        style: {
+          padding: '6px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer', textAlign: 'left',
+          border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)', color: 'inherit',
+        },
+      }, '成员管理'),
+      h('button', {
+        onClick: () => { setSettingsOpen(false); setNotesOpen(true) },
+        style: {
+          padding: '6px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer', textAlign: 'left',
+          border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)', color: 'inherit',
+        },
+      }, '笔记'),
+      h('button', {
+        onClick: () => void deleteThisRoom(),
+        disabled: activeRoomId === 'r1',
+        style: {
+          padding: '6px 10px', fontSize: 12, borderRadius: 4, textAlign: 'left',
+          cursor: activeRoomId === 'r1' ? 'default' : 'pointer',
+          opacity: activeRoomId === 'r1' ? 0.45 : 1,
+          border: '1px solid var(--dsw-alias-state-error-primary, #c0392b)',
+          background: 'var(--dsw-alias-bg-base)',
+          color: 'var(--dsw-alias-state-error-primary, #c0392b)',
+        },
+      }, activeRoomId === 'r1' ? '删除此群（默认群不可删）' : '删除此群（连同消息）')
       ),
       // background picker
       bgPanel && h('div', {

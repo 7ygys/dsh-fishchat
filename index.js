@@ -1284,11 +1284,15 @@ export function apply(ctx) {
         return json(res, 200, { room: roomSummary(db.rooms[id]) })
       }
       if (method === 'DELETE' && sub === '' && roomMatch[1] !== undefined) {
+        if (roomId === ROOM_ID) return json(res, 400, { error: '默认群不能删' })
         const current = room(roomId)
         if (current === undefined) return json(res, 404, { error: 'no room' })
-        current.deleted = true
+        // Full deletion, not a tombstone: drop the room and its whole log so
+        // nothing is left behind on disk.
+        delete db.rooms[roomId]
+        delete db.messages[roomId]
         void persist()
-        return json(res, 200, { ok: true })
+        return json(res, 200, { ok: true, deleted: roomId })
       }
       if (method === 'GET' && sub === '/messages') {
         return json(res, 200, await handleMessages(url.searchParams, roomId))
