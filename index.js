@@ -496,9 +496,44 @@ export function apply(ctx) {
     return { mode: 'chat', targets: active, work, attention }
   }
 
+  // Every `#name` / `¥name` the message actually contains, whether or not it
+  // names a real member. Trailing punctuation is not part of the name.
+  function mentionTokens(text) {
+    const out = []
+    const pattern = /([#＃¥￥])([^\s#＃¥￥]+)/gu
+    let match
+    while ((match = pattern.exec(String(text ?? ''))) !== null) {
+      const symbol = match[1] === '¥' || match[1] === '￥' ? '¥' : '#'
+      const name = match[2].replace(/[\s\p{P}]+$/u, '')
+      if (name !== '') out.push({ symbol, name })
+    }
+    return out
+  }
+
   async function deliverBatch(batch, normalized, senderName) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
+    // A name that matches nobody is a failure, not a silence: leave a trace and
+    // tell the room, so "I called and nothing happened" has an explanation.
+    const pool = agentMembers().filter((member) => member.name !== senderName)
+    const missing = [...new Set(
+      mentionTokens(normalized)
+        .filter((token) => !pool.some((member) => member.name === token.name))
+        .map((token) => `${token.symbol}${token.name}`),
+    )]
+    if (missing.length > 0) {
+      appendSystem(`没有这个成员：${missing.join('、')}（消息已发出，但没有人被叫到）`)
+      current.wakeLog.push({
+        at: Date.now(),
+        requestId: `no-match-${randomUUID()}`,
+        member: '',
+        state: 'no_match',
+        outcome: 'no_match',
+        detail: missing.join('、'),
+      })
+      if (current.wakeLog.length > 200) current.wakeLog.splice(0, current.wakeLog.length - 200)
+      void persist()
+    }
     const { mode, targets, work, attention } = classifyBatch(normalized, senderName)
     if (targets.length === 0) return
     const targetNames = targets.map((member) => member.name)
@@ -865,7 +900,8 @@ export function apply(ctx) {
       .map(([member, value]) => ({ member, at: value?.at ?? 0, seq: value?.seq ?? 0 }))
       .sort((left, right) => right.at - left.at)
     const dayStart = new Date().setHours(0, 0, 0, 0)
-    const todayWakes = (current?.wakeLog ?? []).filter((entry) => entry.at >= dayStart)
+    const todayWakes = (current?.wakeLog ?? []).filter((entry) => entry.at >= dayStart && entry.member !== '')
+    const todayMissed = (current?.wakeLog ?? []).filter((entry) => entry.at >= dayStart && entry.state === 'no_match')
     return {
       room: {
         id: ROOM_ID,
@@ -883,6 +919,7 @@ export function apply(ctx) {
         called: todayWakes.length,
         replied: todayWakes.filter((entry) => entry.state === 'replied').length,
         acked: todayWakes.filter((entry) => entry.state === 'acked').length,
+        missed: todayMissed.length,
       },
       recentWakes: (current?.wakeLog ?? []).slice(-8),
     }
