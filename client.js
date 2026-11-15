@@ -528,6 +528,10 @@ window.__ModuleLoader__.load({
         }
       })
       const notesWidthRef = useRef(notesWidth)
+      // Refs, so the debounced save never reads a stale draft or note id out of
+      // an old render.
+      const noteDraftRef = useRef({ title: '', text: '' })
+      const activeNoteRef = useRef(null)
       const noteSaveTimer = useRef(null)
       const noteEditorRef = useRef(null)
       const atStartRef = useRef(0)
@@ -759,10 +763,10 @@ window.__ModuleLoader__.load({
             if (child.nodeType !== 1) continue
             const chip = child.dataset?.chip
             if (chip === 'quote') {
-              // Keep the seq: the room can re-deliver, so text alone cannot
-              // identify which message was quoted.
+              // Inline marker, no newline: a quote can sit mid-sentence, and a
+              // newline here would split the line the user was typing.
               const seq = child.dataset.seq
-              out += `> ${child.dataset.text}${seq === undefined ? '' : ` (#${seq})`}\n`
+              out += `>${child.dataset.text}${seq === undefined ? '' : `(#${seq})`}`
               continue
             }
             if (chip === 'file') {
@@ -863,26 +867,38 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // A saved note is plain text where quotes are `> …` lines; put those back
-      // as chips when the note is opened.
+      // A saved note is plain text where a quote is written `>text(#seq)` —
+      // possibly mid-line, so scan rather than split by lines.
+      const countBreaks = (chunk) => String(chunk).split('\n').length - 1
+
+      const appendPlain = (node, chunk) => {
+        const parts = String(chunk).split('\n')
+        parts.forEach((part, index) => {
+          if (part !== '') node.appendChild(document.createTextNode(part))
+          if (index < parts.length - 1) node.appendChild(document.createElement('br'))
+        })
+      }
+
       const hydrateNote = (text) => {
         const node = noteEditorRef.current
         if (node === null) return
         node.textContent = ''
-        const lines = String(text ?? '').split('\n')
-        lines.forEach((line, index) => {
-          if (line.startsWith('> ')) {
-            const { body, seq } = splitQuoteSeq(line.slice(2))
-            node.appendChild(makeChip('quote', body, body, seq ?? undefined))
-          } else {
-            node.appendChild(document.createTextNode(line))
-          }
-          if (index < lines.length - 1) node.appendChild(document.createElement('br'))
-        })
+        const source = String(text ?? '')
+        const pattern = />([^>\n]*?)\(#(\d+)\)/g
+        let cursor = 0
+        let match
+        while ((match = pattern.exec(source)) !== null) {
+          if (match.index > cursor) appendPlain(node, source.slice(cursor, match.index))
+          node.appendChild(makeChip('quote', match[1], match[1], match[2]))
+          cursor = pattern.lastIndex
+        }
+        if (cursor < source.length) appendPlain(node, source.slice(cursor))
       }
 
       const selectNote = (note) => {
         setActiveNote(note)
+        activeNoteRef.current = note
+        noteDraftRef.current = { title: note.title, text: note.text }
         setNoteDraft({ title: note.title, text: note.text })
       }
 
@@ -902,20 +918,19 @@ window.__ModuleLoader__.load({
       }
 
       const updateNote = (patch) => {
-        setNoteDraft((current) => {
-          const next = { ...current, ...patch }
-          if (activeNote !== null) {
-            if (noteSaveTimer.current !== null) clearTimeout(noteSaveTimer.current)
-            noteSaveTimer.current = setTimeout(() => {
-              void postJson(`/notes/${activeNote.id}`, { title: next.title, text: next.text }).catch(() => {})
-            }, 700)
-          }
-          return next
-        })
-        if (activeNote !== null) {
-          setNotes((current) => current.map((note) => (note.id === activeNote.id
-            ? { ...note, ...patch, updatedAt: Date.now() }
-            : note)))
+        const next = { ...noteDraftRef.current, ...patch }
+        noteDraftRef.current = next
+        setNoteDraft(next)
+        const note = activeNoteRef.current
+        if (note !== null) {
+          if (noteSaveTimer.current !== null) clearTimeout(noteSaveTimer.current)
+          noteSaveTimer.current = setTimeout(() => {
+            void postJson(`/notes/${note.id}`, { title: next.title, text: next.text })
+              .catch((error) => setError(`笔记保存失败：${String(error?.message ?? error)}`))
+          }, 700)
+          setNotes((current) => current.map((item) => (item.id === note.id
+            ? { ...item, ...patch, updatedAt: Date.now() }
+            : item)))
         }
       }
 
@@ -928,6 +943,8 @@ window.__ModuleLoader__.load({
           if (rest.length > 0) selectNote(rest[0])
           else {
             setActiveNote(null)
+            activeNoteRef.current = null
+            noteDraftRef.current = { title: '', text: '' }
             setNoteDraft({ title: '', text: '' })
           }
         } catch (error) {
