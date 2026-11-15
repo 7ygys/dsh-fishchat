@@ -513,7 +513,7 @@ export function apply(ctx) {
     const label = mode === 'work' ? '派活' : mode === 'attention' ? '特指' : '闲聊'
     const must = highlighted ? '必须回' : '可不回'
     // The room is addressed by id, not by name: names get changed.
-    const head = `【群·${ROOM_ID}·${label}·${must}·${batch.length} 条(${range})】`
+    const head = `【群·${roomId}·${label}·${must}·${batch.length} 条(${range})】`
     const receipt = room(roomId)?.receipts?.[member.name]
     const receiptLine = receipt === undefined || receipt === null
       ? null
@@ -1108,7 +1108,7 @@ export function apply(ctx) {
     const todayMissed = (current?.wakeLog ?? []).filter((entry) => entry.at >= dayStart && entry.state === 'no_match')
     return {
       room: {
-        id: ROOM_ID,
+        id: roomId,
         title: current?.title ?? '群',
         wakeEnabled: current?.wakeEnabled !== false,
         muteAgentToAgent: current?.muteAgentToAgent === true,
