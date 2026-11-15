@@ -701,7 +701,7 @@ window.__ModuleLoader__.load({
         const node = editorRef.current
         if (node === null) return
         try {
-          const saved = localStorage.getItem('dsh-rooms:draft')
+          const saved = localStorage.getItem(`dsh-rooms:draft:${activeRoomId}`)
           if (saved !== null && saved !== '') {
             node.innerHTML = saved
             setHasText(true)
@@ -794,7 +794,7 @@ window.__ModuleLoader__.load({
         setAtPicker(null)
         setMentionPicker(null)
         try {
-          localStorage.removeItem('dsh-rooms:draft')
+          localStorage.removeItem(`dsh-rooms:draft:${activeRoomId}`)
         } catch {
           /* storage unavailable */
         }
@@ -1150,6 +1150,18 @@ window.__ModuleLoader__.load({
         setMessages([])
         setMeta({ seq: 0, earliestSeq: 1, hasMore: false, truncatedBefore: null })
         lastSeqRef.current = 0
+        // Each room keeps its own half-typed draft.
+        if (editorRef.current !== null) editorRef.current.innerHTML = ''
+        setHasText(false)
+        try {
+          const saved = localStorage.getItem(`dsh-rooms:draft:${id}`)
+          if (saved !== null && saved !== '' && editorRef.current !== null) {
+            editorRef.current.innerHTML = saved
+            setHasText(true)
+          }
+        } catch {
+          /* storage unavailable: start empty */
+        }
         void loadInitial()
         void refreshStatus()
       }
@@ -1208,7 +1220,7 @@ window.__ModuleLoader__.load({
         selection?.addRange(after)
         setHasText(readEditor() !== '')
         try {
-          localStorage.setItem('dsh-rooms:draft', editorRef.current?.innerHTML ?? '')
+          localStorage.setItem(`dsh-rooms:draft:${activeRoomId}`, editorRef.current?.innerHTML ?? '')
         } catch {
           /* storage unavailable */
         }
@@ -1236,7 +1248,7 @@ window.__ModuleLoader__.load({
       const onEditorInput = () => {
         setHasText(readEditor() !== '')
         try {
-          localStorage.setItem('dsh-rooms:draft', editorRef.current?.innerHTML ?? '')
+          localStorage.setItem(`dsh-rooms:draft:${activeRoomId}`, editorRef.current?.innerHTML ?? '')
         } catch {
           /* storage unavailable */
         }

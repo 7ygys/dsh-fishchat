@@ -884,24 +884,28 @@ export function apply(ctx) {
     }
   }
 
+  // Wake-log records are addressed by requestId, which is unique across rooms,
+  // so these search every room instead of needing a roomId argument.
+  function findWakeRecord(requestId) {
+    if (typeof requestId !== 'string') return null
+    for (const roomId of Object.keys(db.rooms)) {
+      const entry = (db.rooms[roomId]?.wakeLog ?? []).find((item) => item.requestId === requestId)
+      if (entry !== undefined) return entry
+    }
+    return null
+  }
+
   function markWake(requestId, state) {
-    if (typeof requestId !== 'string') return
-    const current = room(roomId)
-    const entry = (current?.wakeLog ?? []).find((item) => item.requestId === requestId)
-    if (entry === undefined) return
+    const entry = findWakeRecord(requestId)
+    if (entry === null) return
     entry.state = state
     entry.doneAt = Date.now()
     void persist()
   }
 
-  // Two orthogonal fields, per 灯前: `delivery` says whether the message got
-  // out, `wake` says whether a turn actually started. `delivered + no_turn` is
-  // the failure that used to look exactly like success.
   function markWakeFields(requestId, patch) {
-    if (typeof requestId !== 'string') return
-    const current = room(roomId)
-    const entry = (current?.wakeLog ?? []).find((item) => item.requestId === requestId)
-    if (entry === undefined) return
+    const entry = findWakeRecord(requestId)
+    if (entry === null) return
     Object.assign(entry, patch)
     void persist()
   }
