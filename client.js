@@ -337,7 +337,7 @@ window.__ModuleLoader__.load({
         }, name),
         h('div', {
           style: {
-            background: mine ? '#95ec69' : '#f2f2f2',
+            background: mine ? '#95ec69' : 'var(--rooms-bubble-bg, #f2f2f2)',
             // On the green bubble the theme's primary label can be white, which
             // disappears; the bubble keeps its own ink.
             color: mine ? '#1a1a1a' : 'var(--dsw-alias-label-primary)',
@@ -1229,8 +1229,13 @@ window.__ModuleLoader__.load({
         range.deleteContents()
         const textNode = document.createTextNode(value)
         range.insertNode(textNode)
+        // Anchor the caret the same way `insertChip` does. Without a zero-width
+        // node the browser sometimes keeps the old offset after splitting the
+        // text node, and the next keystroke lands twice.
+        const tail = document.createTextNode('\u200b')
+        textNode.after(tail)
         const after = document.createRange()
-        after.setStartAfter(textNode)
+        after.setStartAfter(tail)
         after.collapse(true)
         const selection = window.getSelection()
         selection?.removeAllRanges()
@@ -1354,8 +1359,11 @@ window.__ModuleLoader__.load({
           '--dsw-alias-label-secondary': '#a0a0a0',
           '--dsw-alias-border-l1': '#3a3a3f',
           '--dsw-alias-border-l2': '#4a4a52',
+          // The bubble is its own surface: a light bubble with light text is
+          // exactly how messages "disappeared" in dark mode.
+          '--rooms-bubble-bg': '#2f2f34',
         }
-        : {}
+        : { '--rooms-bubble-bg': '#f2f2f2' }
       const setFontScalePersist = (next) => {
         const value = Math.min(1.4, Math.max(0.8, Math.round(next * 10) / 10))
         setFontScale(value)
@@ -1420,6 +1428,13 @@ window.__ModuleLoader__.load({
           ...themeVars,
           zoom: fontScale,
           outline: dragging ? '2px dashed var(--dsw-alias-brand-primary)' : 'none', outlineOffset: -6,
+        },
+        // Clicking the message area dismisses every floating panel.
+        onClick: () => {
+          if (notesOpen) setNotesOpen(false)
+          if (roomsOpen) setRoomsOpen(false)
+          if (settingsOpen) setSettingsOpen(false)
+          if (bgPanel) setBgPanel(false)
         },
         onDragOver: (event) => {
           event.preventDefault()
@@ -1503,15 +1518,6 @@ window.__ModuleLoader__.load({
         },
       }, '笔记'),
       h('button', {
-        onClick: () => setBgPanel(!bgPanel),
-        title: '聊天背景',
-        style: { padding: '4px 8px', fontSize: 12, borderRadius: 4, border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', cursor: 'pointer', color: 'inherit' },
-      }, '背景'),
-      h('button', {
-        onClick: () => setPicker(true),
-        style: { padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', cursor: 'pointer', color: 'inherit' },
-      }, '成员'),
-      h('button', {
         onClick: toggleWake,
         title: wakeOn ? '正在叫醒：有新消息会把鱼叫起来' : '已静音：只落盘，不叫人',
         style: {
@@ -1528,7 +1534,7 @@ window.__ModuleLoader__.load({
           border: `1px solid ${muted ? '#e0b0a0' : 'var(--dsw-alias-border-l1)'}`,
           background: muted ? '#fdeee8' : '#fff',
         },
-      }, muted ? '鱼静默' : '鱼可叫')
+      }, muted ? '大静默' : '鱼可叫')
       ),
       // body: notes sidebar + messages
       h('div', { style: { display: 'flex', flex: 1, minHeight: 0 } },
@@ -1734,12 +1740,12 @@ window.__ModuleLoader__.load({
         },
       }, '成员管理'),
       h('button', {
-        onClick: () => { setSettingsOpen(false); setNotesOpen(true) },
+        onClick: () => { setSettingsOpen(false); setBgPanel(true) },
         style: {
           padding: '6px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer', textAlign: 'left',
           border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)', color: 'inherit',
         },
-      }, '笔记'),
+      }, '聊天背景'),
       h('button', {
         onClick: () => void deleteThisRoom(),
         disabled: activeRoomId === 'r1',
