@@ -81,9 +81,19 @@ function escapeRegExp(value) {
 
 // Both symbols follow the same token rule: they must start a token and the name
 // must end it, so `#灯灯` never wakes `灯` and `abc#灯` never fires.
-function symbolMentions(normalizedText, symbol, memberName) {
-  const pattern = new RegExp(`(^|[\\s\\p{P}])${escapeRegExp(symbol)}${escapeRegExp(memberName)}($|[\\s\\p{P}])`, 'u')
-  return pattern.test(normalizedText)
+// The text is matched as written: folding the whole message with NFKC would
+// rewrite it (① → 1, ㌔ → キロ), so only the symbol itself has spellings.
+function symbolMentions(text, symbol, memberName) {
+  const variants = symbol === '#'
+    ? ['#', '＃']
+    : symbol === '¥'
+      ? ['¥', '￥']
+      : [symbol]
+  for (const variant of variants) {
+    const pattern = new RegExp(`(^|[\\s\\p{P}])${escapeRegExp(variant)}${escapeRegExp(memberName)}($|[\\s\\p{P}])`, 'u')
+    if (pattern.test(text)) return true
+  }
+  return false
 }
 
 // `#name` = work hand-off. `¥name` = "someone is looking for you" (no work
@@ -511,8 +521,9 @@ export function apply(ctx) {
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
     const batch = messages().filter((message) => message.seq >= fromSeq && message.kind === 'user')
     if (batch.length === 0) return
-    const normalized = batch.map((message) => String(message.text ?? '').normalize('NFKC')).join('\n')
-    await deliverBatch(batch, normalized, undefined)
+    // Match on the text as written; see `symbolMentions` for why we do not fold.
+    const plain = batch.map((message) => String(message.text ?? '')).join('\n')
+    await deliverBatch(batch, plain, undefined)
   }
 
   // Agent messages now fan out too: everyone visible, reply optional. The mute
@@ -521,8 +532,8 @@ export function apply(ctx) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
     if (current.muteAgentToAgent === true) return
-    const normalized = String(message.text ?? '').normalize('NFKC')
-    await deliverBatch([message], normalized, message.from)
+    const plain = String(message.text ?? '')
+    await deliverBatch([message], plain, message.from)
   }
 
   function routeMessage(message) {
@@ -679,11 +690,11 @@ export function apply(ctx) {
         && message.kind !== 'system'
         && message.from !== member.name)
       if (fresh.length > 0) {
-        const normalized = fresh.map((message) => String(message.text ?? '').normalize('NFKC')).join('\n')
+        const plain = fresh.map((message) => String(message.text ?? '')).join('\n')
         // `#` means work — it must keep that meaning on every path, including
         // this catch-up one. `¥` only means "you were called".
-        const workHit = mentions(normalized, member.name)
-        const attentionHit = workHit ? false : attentionMentions(normalized, member.name)
+        const workHit = mentions(plain, member.name)
+        const attentionHit = workHit ? false : attentionMentions(plain, member.name)
         const mode = workHit ? 'work' : attentionHit ? 'attention' : 'chat'
         void deliverTo(member, fresh.slice(-5), workHit || attentionHit, 0, undefined, mode)
       }
