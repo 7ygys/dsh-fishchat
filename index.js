@@ -139,7 +139,11 @@ export function apply(ctx) {
   let db = loadDb()
   let saveChain = Promise.resolve()
   const deliveries = new Map() // sessionId -> delivery record
-  const pendingDelivery = new Map() // sessionId -> { fromSeq } that arrived mid-turn
+  const pendingDelivery = new Map() // `sessionId:roomId` -> { roomId, fromSeq }
+  // Which room each session was last woken in. `room_say` needs this because a
+  // member can be in several rooms and the tool call carries no room id.
+  // Declared up here because deliverTo() writes to it on every delivery.
+  const lastRoomBySession = new Map()
   const runtime = new Map() // sessionId -> { lastSayAt, lastAckAt }
   const memberState = new Map() // name -> { live, running, queued }
   let windowTimer = null
@@ -1543,10 +1547,6 @@ export function apply(ctx) {
   }
 
   // ----------------------------------------------------------------- tools
-
-  // Which room each session was last woken in. `room_say` needs this because a
-  // member can be in several rooms and the tool call carries no room id.
-  const lastRoomBySession = new Map()
 
   function callerContext(exec) {
     const sessionId = exec?.agent?.id
