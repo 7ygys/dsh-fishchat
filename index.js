@@ -1028,7 +1028,12 @@ export function apply(ctx) {
     const members = []
     for (const member of current?.members ?? []) {
       if (member.kind === 'user') {
-        members.push({ kind: 'user', name: member.name, unread: unreadCount(member) })
+        members.push({
+          kind: 'user',
+          name: member.name,
+          unread: unreadCount(member),
+          avatar: typeof member.avatar === 'string' ? member.avatar : '',
+        })
         continue
       }
       let state = null
@@ -1043,6 +1048,7 @@ export function apply(ctx) {
         kind: 'agent',
         name: member.name,
         sessionId: member.sessionId,
+        avatar: typeof member.avatar === 'string' ? member.avatar : '',
         active: member.active !== false,
         unread: unreadCount(member),
         // Highest seq this member is known to have seen — the client uses it to
@@ -1319,6 +1325,17 @@ export function apply(ctx) {
           void persist()
         }
         return json(res, 200, { muteAgentToAgent: current?.muteAgentToAgent === true })
+      }
+      if (method === 'POST' && path === '/rooms/r1/avatar') {
+        const body = await readBody(req)
+        const current = room()
+        if (current === undefined) return json(res, 404, { error: 'no room' })
+        const target = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : 'user'
+        const member = (current.members ?? []).find((item) => (item.kind === 'user' ? 'user' : item.sessionId) === target)
+        if (member === undefined) return json(res, 404, { error: 'no such member' })
+        member.avatar = typeof body.avatar === 'string' ? body.avatar.slice(0, 200) : ''
+        void persist()
+        return json(res, 200, { avatar: member.avatar })
       }
       if (method === 'POST' && path === '/rooms/r1/background') {
         const body = await readBody(req)

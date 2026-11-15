@@ -120,14 +120,30 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function Avatar({ name, size = 34 }) {
+    function Avatar({ name, size = 34, src, onClick, title }) {
       const initial = String(name ?? '?').trim().slice(0, 1) || '?'
+      const box = {
+        width: size,
+        height: size,
+        flex: `0 0 ${size}px`,
+        borderRadius: 6,
+        overflow: 'hidden',
+        cursor: onClick === undefined ? 'default' : 'pointer',
+      }
+      if (typeof src === 'string' && src !== '') {
+        return h('img', {
+          src,
+          alt: String(name ?? ''),
+          title: title ?? String(name ?? ''),
+          onClick,
+          style: { ...box, objectFit: 'cover', display: 'block' },
+        })
+      }
       return h('div', {
+        title: title ?? String(name ?? ''),
+        onClick,
         style: {
-          width: size,
-          height: size,
-          flex: `0 0 ${size}px`,
-          borderRadius: 6,
+          ...box,
           background: avatarColor(name),
           color: '#fff',
           display: 'flex',
@@ -211,7 +227,7 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function Bubble({ message, mine, name, readers, onQuote }) {
+    function Bubble({ message, mine, name, readers, onQuote, avatarSrc, onAvatarClick }) {
       return h('div', {
         style: {
           display: 'flex',
@@ -221,7 +237,7 @@ window.__ModuleLoader__.load({
           margin: '6px 0',
         },
       },
-      h(Avatar, { name: name }),
+      h(Avatar, { name: name, size: 34, src: avatarSrc, onClick: onAvatarClick, title: `${name}（点头像换图）` }),
       h('div', { style: { maxWidth: '68%', minWidth: 40 } },
         h('div', {
           style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', margin: '0 4px 3px', textAlign: mine ? 'right' : 'left' },
@@ -514,6 +530,8 @@ window.__ModuleLoader__.load({
       const fileInputRef = useRef(null)
       const [bgPanel, setBgPanel] = useState(false)
       const bgInputRef = useRef(null)
+      const avatarInputRef = useRef(null)
+      const avatarTargetRef = useRef(null)
       // Notes: a sliding sidebar with its own storage, width remembered locally.
       const [notesOpen, setNotesOpen] = useState(false)
       const [notes, setNotes] = useState([])
@@ -988,8 +1006,26 @@ window.__ModuleLoader__.load({
         return () => { alive = false }
       }, [notesOpen])
 
-      const uploadBackground = async (file) => {
-        if (file === undefined || file === null) return
+      const startAvatarPick = (targetId) => {
+        avatarTargetRef.current = targetId
+        avatarInputRef.current?.click()
+      }
+
+      const uploadAvatar = async (file) => {
+        const target = avatarTargetRef.current
+        if (file === undefined || file === null || target === null) return
+        try {
+          const response = await fetch(`${ROOM}/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const meta = await response.json()
+          await postJson(`${ROOM}/avatar`, { sessionId: target, avatar: meta.id })
+          void refreshStatus()
+        } catch (error) {
+          setError(`头像设置失败：${String(error?.message ?? error)}`)
+        }
+      }
+
+      const uploadBackground = async (file) => {        if (file === undefined || file === null) return
         try {
           const response = await fetch(`${ROOM}/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
           if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -1346,6 +1382,11 @@ window.__ModuleLoader__.load({
         const previous = index === 0 ? undefined : messages[index - 1]
         const divider = showTime(index, message, previous) ? h(TimeDivider, { key: `t-${message.seq}`, at: message.at }) : null
         const displayName = nameFor(message, status?.members)
+        const memberHit = (status?.members ?? []).find((member) => member.name === displayName)
+        const avatarSrc = typeof memberHit?.avatar === 'string' && memberHit.avatar !== ''
+          ? `${ROOM}/file/${memberHit.avatar}`
+          : undefined
+        const avatarTargetId = memberHit?.kind === 'user' ? 'user' : memberHit?.sessionId
         const readers = (status?.members ?? [])
           .filter((member) => member.kind === 'agent'
             && Number.isFinite(member.seenSeq)
@@ -1353,7 +1394,18 @@ window.__ModuleLoader__.load({
           .map((member) => member.name)
         const body = message.kind === 'system'
           ? h(SystemRow, { key: message.seq, message })
-          : h(Bubble, { key: message.seq, message, mine: displayName === mine, name: displayName, readers, onQuote: quoteMessage })
+          : h(Bubble, {
+            key: message.seq,
+            message,
+            mine: displayName === mine,
+            name: displayName,
+            readers,
+            onQuote: quoteMessage,
+            avatarSrc,
+            onAvatarClick: avatarTargetId === undefined
+              ? undefined
+              : () => { startAvatarPick(avatarTargetId) },
+          })
         return h(React.Fragment, { key: `f-${message.seq}` }, divider, body)
       }),
       messages.length === 0 && h('div', {
@@ -1577,6 +1629,16 @@ window.__ModuleLoader__.load({
         },
       }, '发送')
       ),
+      h('input', {
+        ref: avatarInputRef,
+        type: 'file',
+        accept: 'image/*',
+        style: { display: 'none' },
+        onChange: (event) => {
+          void uploadAvatar(event.target.files?.[0])
+          event.target.value = ''
+        },
+      }),
       picker && h(MemberPicker, {
         status,
         onClose: () => setPicker(false),
