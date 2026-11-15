@@ -417,12 +417,17 @@ export function apply(ctx) {
 
   // ------------------------------------------------------------- delivery
 
-  function queueHasPointer(state, requestId) {
+  // `requestId` given: is that exact pointer still queued?
+  // Only `roomId`: is ANY pointer for that room still queued? Pointers for
+  // other rooms must not block this room's delivery.
+  function queueHasPointer(state, requestId, roomId) {
     const queue = Array.isArray(state?.queue) ? state.queue : []
     return queue.some((item) => {
       const id = item?.rpcId
       if (typeof id !== 'string') return false
-      return requestId === undefined ? id.startsWith(POINTER_PREFIX) : id === requestId
+      if (requestId !== undefined) return id === requestId
+      if (roomId === undefined) return id.startsWith(POINTER_PREFIX)
+      return id.startsWith(`${POINTER_PREFIX}${roomId}-`)
     })
   }
 
@@ -606,9 +611,22 @@ export function apply(ctx) {
     return out
   }
 
+  let debugDelivery = null
+  let debugFlush = null
+
   async function deliverBatch(batch, normalized, senderName, roomId = ROOM_ID) {
     const current = room(roomId)
-    if (current === undefined || current.deleted || current.wakeEnabled === false) return
+    if (current === undefined || current.deleted || current.wakeEnabled === false) {
+      debugDelivery = {
+        at: Date.now(),
+        stage: 'early-return',
+        roomFound: current !== undefined,
+        deleted: current?.deleted === true,
+        wakeEnabled: current?.wakeEnabled,
+        roomId,
+      }
+      return
+    }
     // A name that matches nobody is a failure, not a silence — but only shout
     // when NOTHING matched: `#灯后 #灯1` reaching 灯后 is a normal message that
     // happens to contain a typo, not a failed hand-off.
@@ -633,8 +651,11 @@ export function apply(ctx) {
       if (current.wakeLog.length > 200) current.wakeLog.splice(0, current.wakeLog.length - 200)
       void persist()
     }
-    const { mode, targets, work, attention } = classifyBatch(normalized, senderName)
-    if (targets.length === 0) return
+    const { mode, targets, work, attention } = classifyBatch(normalized, senderName, roomId)
+    if (targets.length === 0) {
+      debugDelivery = { at: Date.now(), stage: 'no-targets', mode, roomId }
+      return
+    }
     const targetNames = targets.map((member) => member.name)
     for (const member of targets) {
       const called = (mode === 'work' ? work : mode === 'attention' ? attention : [])
@@ -653,8 +674,20 @@ export function apply(ctx) {
 
   async function flushUserWindow(fromSeq, roomId = ROOM_ID) {
     const current = room(roomId)
-    if (current === undefined || current.deleted || current.wakeEnabled === false) return
+    if (current === undefined || current.deleted || current.wakeEnabled === false) {
+      debugFlush = { at: Date.now(), stage: 'early', roomId, found: current !== undefined, wake: current?.wakeEnabled }
+      return
+    }
     const batch = messages(roomId).filter((message) => message.seq >= fromSeq && message.kind === 'user')
+    debugFlush = {
+      at: Date.now(),
+      stage: 'batch',
+      roomId,
+      fromSeq,
+      total: messages(roomId).length,
+      count: batch.length,
+      tail: messages(roomId).slice(-2).map((message) => `${message.seq}:${message.kind}`),
+    }
     if (batch.length === 0) return
     // Match on the text as written; see `symbolMentions` for why we do not fold.
     const plain = batch.map((message) => String(message.text ?? '')).join('\n')
@@ -701,7 +734,7 @@ export function apply(ctx) {
       appendSystem(`已经连续 ${AGENT_HORN_EVERY} 条 agent 消息没有你说话了。只是提醒，不会停任何东西。`)
     }
     void persist()
-    void deliverAgentMessage(message)
+    void deliverAgentMessage(message, roomId)
   }
 
   async function deliverTo(member, batch, highlighted, handoffDepth = 0, alsoNames, mode = 'chat', roomId = ROOM_ID) {
@@ -748,8 +781,8 @@ export function apply(ctx) {
     }
     // An un-consumed group pointer already queued means this agent will read
     // everything when it gets there; another pointer would only cost a turn.
-    if (queueHasPointer(state)) return
-    const requestId = `${POINTER_PREFIX}${randomUUID()}`
+    if (queueHasPointer(state, undefined, roomId)) return
+    const requestId = `${POINTER_PREFIX}${roomId}-${randomUUID()}`
     const cursorBefore = state.cursor
     const startedAt = Date.now()
     try {
@@ -1086,6 +1119,13 @@ export function apply(ctx) {
       seq: db.seq,
       earliestSeq: db.earliestSeq,
       consecutiveAgent: current?.consecutiveAgent ?? 0,
+      debugDelivery,
+      debugFlush,
+      debugWindow: {
+        from: windowFromSeq,
+        timer: windowTimer !== null,
+        openedFor: windowOpenedAt === 0 ? 0 : Date.now() - windowOpenedAt,
+      },
       members,
       lastAck: ackEntries[0] ?? null,
       receipts: current?.receipts ?? {},
@@ -1364,11 +1404,13 @@ export function apply(ctx) {
             }
             : {}),
         })
-        scheduleDeliveryWindow(message)
+        // No explicit scheduleDeliveryWindow here: appendMessage → routeMessage
+        // already opens the window, and calling it again would overwrite it
+        // with a call missing the roomId (which fell back to r1).
         return json(res, 200, { message })
       }
       if (method === 'POST' && sub === '/read') {
-        const user = userMember()
+        const user = userMember(roomId)
         if (user !== undefined) {
           user.lastReadSeq = db.seq
           void persist()
@@ -1460,7 +1502,7 @@ export function apply(ctx) {
           })
         const current = room(roomId)
         if (current !== undefined) {
-          const user = userMember()
+          const user = userMember(roomId)
           current.members = [user ?? { kind: 'user', name: '我', lastReadSeq: 0 }, ...agents]
           void persist()
         }
