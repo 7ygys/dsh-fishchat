@@ -324,6 +324,8 @@ export function apply(ctx) {
       id: note.id,
       title: String(note.title ?? '') || '无标题',
       text: String(note.text ?? ''),
+      // Notes belong to a room. Older rows have no roomId and are treated as r1.
+      roomId: typeof note.roomId === 'string' && note.roomId !== '' ? note.roomId : ROOM_ID,
       updatedAt: Number.isFinite(note.updatedAt) ? note.updatedAt : 0,
     }
   }
@@ -809,6 +811,9 @@ export function apply(ctx) {
     if (!Number.isFinite(member.lastSeenSeq) || member.lastSeenSeq < seenTo) {
       member.lastSeenSeq = seenTo
     }
+    // Remember which room this session was last spoken to in, so `room_say`
+    // (which has no room argument) answers in the right room.
+    lastRoomBySession.set(member.sessionId, roomId)
     const current = room(roomId)
     if (current !== undefined) {
       // Persisted so a plugin reload mid-turn does not orphan the answer.
@@ -1535,6 +1540,25 @@ export function apply(ctx) {
 
   // ----------------------------------------------------------------- tools
 
+  // Which room each session was last woken in. `room_say` needs this because a
+  // member can be in several rooms and the tool call carries no room id.
+  const lastRoomBySession = new Map()
+
+  function callerContext(exec) {
+    const sessionId = exec?.agent?.id
+    if (typeof sessionId !== 'string') return undefined
+    const remembered = lastRoomBySession.get(sessionId)
+    if (typeof remembered === 'string') {
+      const member = agentMembers(remembered).find((item) => item.sessionId === sessionId)
+      if (member !== undefined) return { member, roomId: remembered }
+    }
+    for (const roomId of Object.keys(db.rooms)) {
+      const member = agentMembers(roomId).find((item) => item.sessionId === sessionId)
+      if (member !== undefined) return { member, roomId }
+    }
+    return undefined
+  }
+
   function callerMember(exec) {
     const sessionId = exec?.agent?.id
     if (typeof sessionId !== 'string') return undefined
@@ -1576,8 +1600,9 @@ export function apply(ctx) {
       },
     },
     async execute(args, exec) {
-      const member = callerMember(exec)
-      if (member === undefined) throw new Error('你不在任何群里，不能使用 room_say。')
+      const caller = callerContext(exec)
+      if (caller === undefined) throw new Error('你不在任何群里，不能使用 room_say。')
+      const { member, roomId } = caller
       const text = String(args?.text ?? '').trim()
       if (text === '') throw new Error('text 不能为空。')
       const message = appendMessage({
@@ -1585,6 +1610,7 @@ export function apply(ctx) {
         kind: 'agent',
         text,
         memberId: member.sessionId,
+        roomId,
         ...(typeof member.cwd === 'string' && member.cwd !== '' ? { root: member.cwd } : {}),
       })
       runtime.set(member.sessionId, { ...(runtime.get(member.sessionId) ?? {}), lastSayAt: Date.now() })
@@ -1633,11 +1659,12 @@ export function apply(ctx) {
       },
     },
     async execute(args, exec) {
-      const member = callerMember(exec)
-      if (member === undefined) throw new Error('你不在任何群里，不能使用 room_read。')
+      const caller = callerContext(exec)
+      if (caller === undefined) throw new Error('你不在任何群里，不能使用 room_read。')
+      const { member, roomId } = caller
       const requested = Number.parseInt(String(args?.limit ?? ''), 10)
       const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 50) : READ_LIMIT
-      const all = messages()
+      const all = messages(roomId)
       const after = Number(args?.after)
       if (Number.isFinite(after)) {
         const page = all.filter((message) => message.seq > after).slice(0, limit)
@@ -1708,8 +1735,9 @@ export function apply(ctx) {
       },
     },
     async execute(args, exec) {
-      const member = callerMember(exec)
-      if (member === undefined) throw new Error('你不在任何群里，不能使用 room_ack。')
+      const caller = callerContext(exec)
+      if (caller === undefined) throw new Error('你不在任何群里，不能使用 room_ack。')
+      const { member, roomId } = caller
       const record = deliveries.get(member.sessionId)
       // "Read it, not mine" still means READ: advance the cursor to the end of
       // this batch, or the same message stays "unread" and gets delivered again.
@@ -1719,7 +1747,7 @@ export function apply(ctx) {
           member.lastReadSeq = lastSeq
         }
       }
-      const current = room()
+      const current = room(record?.roomId ?? roomId)
       if (current !== undefined) {
         current.acks[member.name] = {
           at: Date.now(),
@@ -1806,13 +1834,20 @@ export function apply(ctx) {
     const method = (req.method ?? 'GET').toUpperCase()
     try {
       if (method === 'GET' && path === '/notes') {
-        return json(res, 200, { notes: loadNotes().map(noteShape).sort((a, b) => b.updatedAt - a.updatedAt) })
+        const roomFilter = url.searchParams.get('room')
+        const list = loadNotes()
+          .map(noteShape)
+          .filter((note) => roomFilter === null || note.roomId === roomFilter)
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+        return json(res, 200, { notes: list })
       }
       if (method === 'POST' && path === '/notes') {
+        const body = await readBody(req)
         const note = noteShape({
           id: randomUUID(),
           title: '',
           text: '',
+          roomId: typeof body.roomId === 'string' && body.roomId !== '' ? body.roomId : ROOM_ID,
           updatedAt: Date.now(),
         })
         loadNotes().push(note)

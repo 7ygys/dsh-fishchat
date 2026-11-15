@@ -1040,7 +1040,7 @@ window.__ModuleLoader__.load({
 
       const createNote = async () => {
         try {
-          const data = await postJson('/notes', {})
+          const data = await postJson('/notes', { roomId: activeRoomId })
           setNotes((current) => [data.note, ...current])
           selectNote(data.note)
         } catch (error) {
@@ -1105,18 +1105,28 @@ window.__ModuleLoader__.load({
         window.addEventListener('mouseup', up)
       }
 
-      useEffect(() => {
-        if (!notesOpen) return undefined
-        let alive = true
-        getJson('/notes')
+      // Notes are per room, so the list is reloaded whenever the room changes.
+      const loadNotesForRoom = (roomId) => {
+        getJson(`/notes?room=${roomId}`)
           .then((data) => {
-            if (!alive) return
             const list = data.notes ?? []
             setNotes(list)
-            if (list.length > 0) selectNote(list[0])
+            if (list.length > 0) {
+              selectNote(list[0])
+              return
+            }
+            setActiveNote(null)
+            activeNoteRef.current = null
+            noteDraftRef.current = { title: '', text: '' }
+            setNoteDraft({ title: '', text: '' })
+            if (noteEditorRef.current !== null) noteEditorRef.current.textContent = ''
           })
           .catch(() => {})
-        return () => { alive = false }
+      }
+
+      useEffect(() => {
+        if (!notesOpen) return
+        loadNotesForRoom(activeRoomId)
       }, [notesOpen])
 
       const startAvatarPick = (targetId) => {
@@ -1179,6 +1189,7 @@ window.__ModuleLoader__.load({
         } catch {
           /* storage unavailable: start empty */
         }
+        if (notesOpen) loadNotesForRoom(id)
         void loadInitial()
         void refreshStatus()
       }
@@ -1435,9 +1446,10 @@ window.__ModuleLoader__.load({
           zoom: fontScale,
           outline: dragging ? '2px dashed var(--dsw-alias-brand-primary)' : 'none', outlineOffset: -6,
         },
-        // Clicking the message area dismisses every floating panel.
+        // Clicking the message area dismisses the floating panels. The notes
+        // panel is NOT dismissed here: it is a sibling inside this element, so
+        // every click on it would bubble up and close it.
         onClick: () => {
-          if (notesOpen) setNotesOpen(false)
           if (roomsOpen) setRoomsOpen(false)
           if (settingsOpen) setSettingsOpen(false)
           if (bgPanel) setBgPanel(false)
