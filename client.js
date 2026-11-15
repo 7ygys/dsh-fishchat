@@ -10,7 +10,19 @@ window.__ModuleLoader__.load({
     const h = React.createElement
     const { useState, useEffect, useRef, useCallback } = React
 
-    const ROOM = '/rooms/r1'
+    // Which room the panel is showing. Module-level because the small
+    // components (icon, avatar picker) render outside GroupPanel.
+    let activeRoomId = (() => {
+      try {
+        return localStorage.getItem('dsh-rooms:active') ?? 'r1'
+      } catch {
+        return 'r1'
+      }
+    })()
+
+    function roomBase() {
+      return `/rooms/${activeRoomId}`
+    }
     const POLL_MS = 1500
     const FORCE_TIME_EVERY = 30
     const PAGE = 50
@@ -81,7 +93,7 @@ window.__ModuleLoader__.load({
         const tick = async () => {
           if (document.visibilityState !== 'visible') return
           try {
-            const data = await getJson(`${ROOM}/status`)
+            const data = await getJson(`${roomBase()}/status`)
             if (!alive) return
             const user = (data.members ?? []).find((member) => member.kind === 'user')
             setUnread(user?.unread ?? 0)
@@ -154,6 +166,87 @@ window.__ModuleLoader__.load({
           userSelect: 'none',
         },
       }, initial)
+    }
+
+    // A room's icon is a mosaic of its members' avatars (up to 2×2).
+    function GroupMosaic({ members, size = 40 }) {
+      const cells = (members ?? []).slice(0, 4)
+      const columns = cells.length <= 1 ? 1 : 2
+      const rows = cells.length <= 2 ? 1 : 2
+      const gap = 1
+      const cell = Math.floor((size - gap * (columns - 1)) / Math.max(columns, 1))
+      return h('div', {
+        style: {
+          width: size, height: size, flex: `0 0 ${size}px`,
+          display: 'grid',
+          gridTemplateColumns: `repeat(${columns}, ${cell}px)`,
+          gridTemplateRows: `repeat(${rows}, ${cell}px)`,
+          gap,
+          borderRadius: 6,
+          overflow: 'hidden',
+          background: 'var(--dsw-alias-border-l1)',
+        },
+      }, cells.map((member, index) => h(Avatar, {
+        key: index,
+        name: member.name,
+        size: cell,
+        src: typeof member.avatar === 'string' && member.avatar !== '' ? `${roomBase()}/file/${member.avatar}` : undefined,
+      })))
+    }
+
+    function RoomList({ rooms, activeId, onPick, onCreate, onClose }) {
+      return h('div', {
+        style: {
+          width: 200, flex: '0 0 auto', display: 'flex', flexDirection: 'column', minHeight: 0,
+          background: 'var(--dsw-alias-bg-layer-1)', borderRight: '1px solid var(--dsw-alias-border-l1)',
+        },
+      },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, padding: '8px 6px 4px' } },
+        h('span', { style: { flex: 1, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '群'),
+        h('button', {
+          onClick: onCreate,
+          title: '新建群',
+          style: {
+            width: 22, height: 22, borderRadius: 4, cursor: 'pointer', lineHeight: '18px',
+            border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)',
+            color: 'var(--dsw-alias-label-primary)',
+          },
+        }, '+'),
+        h('button', {
+          onClick: onClose,
+          title: '收起',
+          style: {
+            width: 22, height: 22, borderRadius: 4, cursor: 'pointer', lineHeight: '18px',
+            border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)',
+            color: 'var(--dsw-alias-label-secondary)',
+          },
+        }, '×')
+      ),
+      h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto' } },
+        rooms.length === 0 && h('div', {
+          style: { padding: '8px 10px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
+        }, '还没有群'),
+        rooms.map((room) => h('div', {
+          key: room.id,
+          onClick: () => onPick(room.id),
+          style: {
+            display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', cursor: 'pointer',
+            background: room.id === activeId ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+          },
+        },
+        h(GroupMosaic, { members: room.members, size: 34 }),
+        h('div', { style: { minWidth: 0, flex: 1 } },
+          h('div', {
+            style: { fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+          }, room.title),
+          h('div', {
+            style: {
+              fontSize: 10, color: 'var(--dsw-alias-label-secondary)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            },
+          }, room.lastText === '' ? '还没有消息' : room.lastText)
+        ))
+      )))
     }
 
     function TimeDivider({ at }) {
@@ -271,7 +364,7 @@ window.__ModuleLoader__.load({
           style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: String(message.text ?? '') === '' ? 0 : 7 },
         },
         message.attachments.map((file) => {
-          const src = `${ROOM}/file/${file.id}`
+          const src = `${roomBase()}/file/${file.id}`
           if (file.kind === 'image') {
             return h('img', {
               key: file.id,
@@ -368,7 +461,7 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         let alive = true
-        getJson(`${ROOM}/candidates`)
+        getJson(`${roomBase()}/candidates`)
           .then((data) => {
             if (!alive) return
             setItems(data.items ?? [])
@@ -416,7 +509,7 @@ window.__ModuleLoader__.load({
             active: entry.active !== false,
             ...(typeof byId.get(sessionId)?.cwd === 'string' ? { cwd: byId.get(sessionId).cwd } : {}),
           }))
-          await postJson(`${ROOM}/members`, { members })
+          await postJson(`${roomBase()}/members`, { members })
           onSaved()
         } catch (error) {
           setError(String(error.message ?? error))
@@ -532,6 +625,9 @@ window.__ModuleLoader__.load({
       const bgInputRef = useRef(null)
       const avatarInputRef = useRef(null)
       const avatarTargetRef = useRef(null)
+      const [roomList, setRoomList] = useState([])
+      const [roomsOpen, setRoomsOpen] = useState(false)
+      const [, bumpRoom] = useState(0)
       // Notes: a sliding sidebar with its own storage, width remembered locally.
       const [notesOpen, setNotesOpen] = useState(false)
       const [notes, setNotes] = useState([])
@@ -564,7 +660,7 @@ window.__ModuleLoader__.load({
 
       const refreshStatus = useCallback(async () => {
         try {
-          const data = await getJson(`${ROOM}/status`)
+          const data = await getJson(`${roomBase()}/status`)
           setStatus(data)
           const latest = (data.members ?? []).find((member) => member.kind === 'agent')
           // Only a NEW acknowledgement flashes; an old one must not sit on
@@ -582,11 +678,11 @@ window.__ModuleLoader__.load({
 
       const loadInitial = useCallback(async () => {
         try {
-          const data = await getJson(`${ROOM}/messages`)
+          const data = await getJson(`${roomBase()}/messages`)
           setMessages(data.messages ?? [])
           lastSeqRef.current = data.seq ?? 0
           setMeta({ seq: data.seq, earliestSeq: data.earliestSeq, hasMore: data.hasMore, truncatedBefore: data.truncatedBefore })
-          await postJson(`${ROOM}/read`, {})
+          await postJson(`${roomBase()}/read`, {})
         } catch (error) {
           setError(String(error.message ?? error))
         }
@@ -632,12 +728,12 @@ window.__ModuleLoader__.load({
         const tick = async () => {
           if (document.visibilityState !== 'visible') return
           try {
-            const data = await getJson(`${ROOM}/messages?since=${lastSeqRef.current}&limit=200`)
+            const data = await getJson(`${roomBase()}/messages?since=${lastSeqRef.current}&limit=200`)
             if (!alive) return
             if (Array.isArray(data.messages) && data.messages.length > 0) {
               lastSeqRef.current = Math.max(lastSeqRef.current, data.seq ?? 0)
               setMessages((current) => [...current, ...data.messages])
-              void postJson(`${ROOM}/read`, {})
+              void postJson(`${roomBase()}/read`, {})
             }
             setMeta((current) => ({
               seq: data.seq ?? current.seq,
@@ -672,7 +768,7 @@ window.__ModuleLoader__.load({
         const first = messages[0]
         if (first === undefined) return
         try {
-          const data = await getJson(`${ROOM}/messages?before=${first.seq}&limit=${PAGE}`)
+          const data = await getJson(`${roomBase()}/messages?before=${first.seq}&limit=${PAGE}`)
           const node = listRef.current
           const before = node === null ? 0 : node.scrollHeight
           setMessages((current) => [...(data.messages ?? []), ...current])
@@ -704,12 +800,12 @@ window.__ModuleLoader__.load({
         }
         stickRef.current = true
         try {
-          await postJson(`${ROOM}/say`, {
+          await postJson(`${roomBase()}/say`, {
             text,
             ...(outgoing.length === 0 ? {} : { attachments: outgoing }),
             ...(fileRootRef.current === '' ? {} : { root: fileRootRef.current }),
           })
-          const data = await getJson(`${ROOM}/messages?since=${lastSeqRef.current}&limit=200`)
+          const data = await getJson(`${roomBase()}/messages?since=${lastSeqRef.current}&limit=200`)
           if (Array.isArray(data.messages) && data.messages.length > 0) {
             lastSeqRef.current = Math.max(lastSeqRef.current, data.seq ?? 0)
             setMessages((current) => [...current, ...data.messages])
@@ -725,7 +821,7 @@ window.__ModuleLoader__.load({
       const toggleWake = async () => {
         try {
           const next = !(status?.room?.wakeEnabled !== false)
-          await postJson(`${ROOM}/wake`, { enabled: next })
+          await postJson(`${roomBase()}/wake`, { enabled: next })
           void refreshStatus()
         } catch (error) {
           setError(String(error.message ?? error))
@@ -735,7 +831,7 @@ window.__ModuleLoader__.load({
       const toggleMute = async () => {
         try {
           const next = !(status?.room?.muteAgentToAgent === true)
-          await postJson(`${ROOM}/mute`, { enabled: next })
+          await postJson(`${roomBase()}/mute`, { enabled: next })
           void refreshStatus()
         } catch (error) {
           setError(String(error.message ?? error))
@@ -747,7 +843,7 @@ window.__ModuleLoader__.load({
         setEditingTitle(false)
         if (title === '' || title === (status?.room?.title ?? '群')) return
         try {
-          await postJson(`${ROOM}/title`, { title })
+          await postJson(`${roomBase()}/title`, { title })
           void refreshStatus()
         } catch (error) {
           setError(String(error.message ?? error))
@@ -756,7 +852,7 @@ window.__ModuleLoader__.load({
 
       const loadFiles = useCallback(async (dir, query, start) => {
         try {
-          const data = await getJson(`${ROOM}/files?dir=${encodeURIComponent(dir)}&q=${encodeURIComponent(query)}`)
+          const data = await getJson(`${roomBase()}/files?dir=${encodeURIComponent(dir)}&q=${encodeURIComponent(query)}`)
           if (typeof data.root === 'string' && data.root !== '') fileRootRef.current = data.root
           setAtPicker({ dir, items: data.items ?? [], query, start })
           atStartRef.current = start
@@ -878,7 +974,7 @@ window.__ModuleLoader__.load({
 
       const setBackground = async (background) => {
         try {
-          await postJson(`${ROOM}/background`, background)
+          await postJson(`${roomBase()}/background`, background)
           void refreshStatus()
         } catch (error) {
           setError(String(error?.message ?? error))
@@ -1015,10 +1111,10 @@ window.__ModuleLoader__.load({
         const target = avatarTargetRef.current
         if (file === undefined || file === null || target === null) return
         try {
-          const response = await fetch(`${ROOM}/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
+          const response = await fetch(`${roomBase()}/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
           if (!response.ok) throw new Error(`HTTP ${response.status}`)
           const meta = await response.json()
-          await postJson(`${ROOM}/avatar`, { sessionId: target, avatar: meta.id })
+          await postJson(`${roomBase()}/avatar`, { sessionId: target, avatar: meta.id })
           void refreshStatus()
         } catch (error) {
           setError(`头像设置失败：${String(error?.message ?? error)}`)
@@ -1027,7 +1123,7 @@ window.__ModuleLoader__.load({
 
       const uploadBackground = async (file) => {        if (file === undefined || file === null) return
         try {
-          const response = await fetch(`${ROOM}/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
+          const response = await fetch(`${roomBase()}/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
           if (!response.ok) throw new Error(`HTTP ${response.status}`)
           const meta = await response.json()
           await setBackground({ type: 'image', value: meta.id })
@@ -1036,11 +1132,49 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const loadRooms = useCallback(async () => {
+        try {
+          const data = await getJson('/rooms')
+          setRoomList(data.rooms ?? [])
+        } catch {
+          /* the list is cosmetic: a failure must not break the panel */
+        }
+      }, [])
+
+      const switchRoom = (id) => {
+        setRoomsOpen(false)
+        if (id === activeRoomId) return
+        activeRoomId = id
+        try { localStorage.setItem('dsh-rooms:active', id) } catch { /* storage unavailable */ }
+        bumpRoom((value) => value + 1)
+        setMessages([])
+        setMeta({ seq: 0, earliestSeq: 1, hasMore: false, truncatedBefore: null })
+        lastSeqRef.current = 0
+        void loadInitial()
+        void refreshStatus()
+      }
+
+      const createRoom = async () => {
+        try {
+          const data = await postJson('/rooms', { title: '新群' })
+          if (data?.room?.id !== undefined) {
+            await loadRooms()
+            switchRoom(data.room.id)
+          }
+        } catch (error) {
+          setError(`建群失败：${String(error?.message ?? error)}`)
+        }
+      }
+
+      useEffect(() => {
+        void loadRooms()
+      }, [loadRooms])
+
       const uploadFiles = async (fileList) => {
         const list = Array.from(fileList ?? []).slice(0, 9)
         for (const file of list) {
           try {
-            const response = await fetch(`${ROOM}/upload?name=${encodeURIComponent(file.name)}`, {
+            const response = await fetch(`${roomBase()}/upload?name=${encodeURIComponent(file.name)}`, {
               method: 'POST',
               body: file,
             })
@@ -1177,11 +1311,32 @@ window.__ModuleLoader__.load({
       const muted = status?.room?.muteAgentToAgent === true
       const bg = status?.room?.background
       const roomBackground = bg?.type === 'image' && bg.value !== ''
-        ? `url("${ROOM}/file/${bg.value}") center / cover no-repeat`
+        ? `url("${roomBase()}/file/${bg.value}") center / cover no-repeat`
         : (bg?.value !== '' && bg?.value !== undefined ? bg.value : 'var(--dsw-alias-bg-base)')
 
       return h('div', {
+        style: { display: 'flex', height: '100%', minHeight: 0 },
+      },
+      roomsOpen
+        ? h(RoomList, {
+          rooms: roomList,
+          activeId: activeRoomId,
+          onPick: switchRoom,
+          onCreate: () => { void createRoom() },
+          onClose: () => setRoomsOpen(false),
+        })
+        : h('div', {
+          onClick: () => setRoomsOpen(true),
+          title: '展开群列表',
+          style: {
+            width: 16, flex: '0 0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)', fontSize: 12, userSelect: 'none',
+            background: 'var(--dsw-alias-bg-layer-1)', borderRight: '1px solid var(--dsw-alias-border-l1)',
+          },
+        }, '>'),
+      h('div', {
         style: {
+          flex: 1, minWidth: 0,
           position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
           background: roomBackground, color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit',
           outline: dragging ? '2px dashed var(--dsw-alias-brand-primary)' : 'none', outlineOffset: -6,
@@ -1384,7 +1539,7 @@ window.__ModuleLoader__.load({
         const displayName = nameFor(message, status?.members)
         const memberHit = (status?.members ?? []).find((member) => member.name === displayName)
         const avatarSrc = typeof memberHit?.avatar === 'string' && memberHit.avatar !== ''
-          ? `${ROOM}/file/${memberHit.avatar}`
+          ? `${roomBase()}/file/${memberHit.avatar}`
           : undefined
         const avatarTargetId = memberHit?.kind === 'user' ? 'user' : memberHit?.sessionId
         const readers = (status?.members ?? [])
@@ -1436,7 +1591,7 @@ window.__ModuleLoader__.load({
         },
       },
       file.kind === 'image'
-        ? h('img', { src: `${ROOM}/file/${file.id}`, alt: '', style: { width: 22, height: 22, objectFit: 'cover', borderRadius: 3 } })
+        ? h('img', { src: `${roomBase()}/file/${file.id}`, alt: '', style: { width: 22, height: 22, objectFit: 'cover', borderRadius: 3 } })
         : h('span', null, file.kind === 'video' ? '视频' : '文件'),
       h('span', { style: { maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, file.name),
       h('button', {
@@ -1644,6 +1799,7 @@ window.__ModuleLoader__.load({
         onClose: () => setPicker(false),
         onSaved: () => { setPicker(false); void refreshStatus(); void loadInitial() },
       })
+      )
       )
     }
 
