@@ -751,8 +751,12 @@ export function apply(ctx) {
     // queued pointer cannot carry it (it was never sent), so remember the seq
     // and re-deliver once that turn settles.
     if (deliveries.has(member.sessionId)) {
-      const previous = pendingDelivery.get(member.sessionId)
-      pendingDelivery.set(member.sessionId, {
+      // Keyed per room: a member that is busy in one room must still get the
+      // other room's message back after its turn, not a mixed batch.
+      const key = `${member.sessionId}:${roomId}`
+      const previous = pendingDelivery.get(key)
+      pendingDelivery.set(key, {
+        roomId,
         fromSeq: Math.min(previous?.fromSeq ?? batch[0].seq, batch[0].seq),
       })
       const busy = room(roomId)
@@ -883,37 +887,39 @@ export function apply(ctx) {
       clearInflight(member.sessionId, record.roomId ?? ROOM_ID)
     }
     // Messages that arrived while this turn was running were only remembered,
-    // never sent. Deliver them now that the member is free again.
-    const pending = pendingDelivery.get(member.sessionId)
-    if (pending !== undefined) {
-      pendingDelivery.delete(member.sessionId)
+    // never sent. Deliver them now, one batch per room — a member can be busy
+    // in several rooms at once.
+    const prefix = `${member.sessionId}:`
+    const queued = [...pendingDelivery.entries()].filter(([key]) => key.startsWith(prefix))
+    for (const [key, pending] of queued) {
+      pendingDelivery.delete(key)
+      const pendingRoom = pending.roomId ?? record.roomId ?? ROOM_ID
       // Never re-deliver the member its own message: that is how a broadcast
       // woke an agent with its own reply.
-      const fresh = messages(record.roomId ?? ROOM_ID).filter((message) => message.seq >= pending.fromSeq
+      const fresh = messages(pendingRoom).filter((message) => message.seq >= pending.fromSeq
         && message.kind !== 'system'
         && message.from !== member.name)
-      if (fresh.length > 0) {
-        // The queued records for this member are about to be honoured; close
-        // them out so the ledger does not keep stale "waiting" rows forever.
-        const current = room(record.roomId ?? ROOM_ID)
-        let settled = false
-        for (const entry of current?.wakeLog ?? []) {
-          if (entry.member === member.name && entry.state === 'queued') {
-            entry.state = 'delivered'
-            entry.delivery = 'delivered'
-            entry.detail = 'requeued'
-            settled = true
-          }
+      if (fresh.length === 0) continue
+      // The queued records for this member are about to be honoured; close
+      // them out so the ledger does not keep stale "waiting" rows forever.
+      const current = room(pendingRoom)
+      let settled = false
+      for (const entry of current?.wakeLog ?? []) {
+        if (entry.member === member.name && entry.state === 'queued') {
+          entry.state = 'delivered'
+          entry.delivery = 'delivered'
+          entry.detail = 'requeued'
+          settled = true
         }
-        if (settled) void persist()
-        const plain = fresh.map((message) => String(message.text ?? '')).join('\n')
-        // `#` means work — it must keep that meaning on every path, including
-        // this catch-up one. `¥` only means "you were called".
-        const workHit = mentions(plain, member.name)
-        const attentionHit = workHit ? false : attentionMentions(plain, member.name)
-        const mode = workHit ? 'work' : attentionHit ? 'attention' : 'chat'
-        void deliverTo(member, fresh.slice(-5), workHit || attentionHit, 0, undefined, mode, record.roomId ?? ROOM_ID)
       }
+      if (settled) void persist()
+      const plain = fresh.map((message) => String(message.text ?? '')).join('\n')
+      // `#` means work — it must keep that meaning on every path, including
+      // this catch-up one. `¥` only means "you were called".
+      const workHit = mentions(plain, member.name)
+      const attentionHit = workHit ? false : attentionMentions(plain, member.name)
+      const mode = workHit ? 'work' : attentionHit ? 'attention' : 'chat'
+      void deliverTo(member, fresh.slice(-5), workHit || attentionHit, 0, undefined, mode, pendingRoom)
     }
   }
 
