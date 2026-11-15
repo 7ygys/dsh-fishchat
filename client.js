@@ -945,9 +945,12 @@ window.__ModuleLoader__.load({
           return `${timeLabel(entry.at)} ${entry.member} 被叫醒（seq ${entry.seqFrom}）${tail}`
         }).join('\n'),
         style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', cursor: 'default' },
-      }, status.wakeStats.missed > 0
-        ? `叫醒 ${status.wakeStats.called} · 回 ${status.wakeStats.replied} · 没匹配 ${status.wakeStats.missed}`
-        : `叫醒 ${status.wakeStats.called} · 回 ${status.wakeStats.replied}`),
+      }, [
+        `叫醒 ${status.wakeStats.called}`,
+        `回 ${status.wakeStats.replied}`,
+        status.wakeStats.noTurn > 0 ? `没醒 ${status.wakeStats.noTurn}` : null,
+        status.wakeStats.missed > 0 ? `没匹配 ${status.wakeStats.missed}` : null,
+      ].filter(Boolean).join(' · ')),
       h('button', {
         onClick: () => setPicker(true),
         style: { padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--dsw-alias-border-l1)', background: '#fff', cursor: 'pointer' },

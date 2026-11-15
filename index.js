@@ -513,22 +513,25 @@ export function apply(ctx) {
   async function deliverBatch(batch, normalized, senderName) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
-    // A name that matches nobody is a failure, not a silence: leave a trace and
-    // tell the room, so "I called and nothing happened" has an explanation.
+    // A name that matches nobody is a failure, not a silence — but only shout
+    // when NOTHING matched: `#灯后 #灯1` reaching 灯后 is a normal message that
+    // happens to contain a typo, not a failed hand-off.
     const pool = agentMembers().filter((member) => member.name !== senderName)
+    const tokens = mentionTokens(normalized)
     const missing = [...new Set(
-      mentionTokens(normalized)
+      tokens
         .filter((token) => !pool.some((member) => member.name === token.name))
         .map((token) => `${token.symbol}${token.name}`),
     )]
-    if (missing.length > 0) {
+    if (tokens.length > 0 && missing.length === tokens.length) {
       appendSystem(`没有这个成员：${missing.join('、')}（消息已发出，但没有人被叫到）`)
       current.wakeLog.push({
         at: Date.now(),
         requestId: `no-match-${randomUUID()}`,
         member: '',
         state: 'no_match',
-        outcome: 'no_match',
+        delivery: 'no_match',
+        wake: 'not_required',
         detail: missing.join('、'),
       })
       if (current.wakeLog.length > 200) current.wakeLog.splice(0, current.wakeLog.length - 200)
@@ -566,7 +569,19 @@ export function apply(ctx) {
   async function deliverAgentMessage(message) {
     const current = room()
     if (current === undefined || current.deleted || current.wakeEnabled === false) return
-    if (current.muteAgentToAgent === true) return
+    if (current.muteAgentToAgent === true) {
+      current.wakeLog.push({
+        at: Date.now(),
+        requestId: `muted-${randomUUID()}`,
+        member: '',
+        state: 'muted',
+        delivery: 'muted',
+        wake: 'not_required',
+      })
+      if (current.wakeLog.length > 200) current.wakeLog.splice(0, current.wakeLog.length - 200)
+      void persist()
+      return
+    }
     const plain = String(message.text ?? '')
     await deliverBatch([message], plain, message.from)
   }
@@ -610,6 +625,19 @@ export function apply(ctx) {
       pendingDelivery.set(member.sessionId, {
         fromSeq: Math.min(previous?.fromSeq ?? batch[0].seq, batch[0].seq),
       })
+      const busy = room()
+      if (busy !== undefined) {
+        busy.wakeLog.push({
+          at: Date.now(),
+          requestId: `queued-${randomUUID()}`,
+          member: member.name,
+          state: 'queued',
+          delivery: 'queued',
+          wake: 'not_required',
+        })
+        if (busy.wakeLog.length > 200) busy.wakeLog.splice(0, busy.wakeLog.length - 200)
+        void persist()
+      }
       return
     }
     let state
@@ -660,6 +688,8 @@ export function apply(ctx) {
         seqFrom: batch[0].seq,
         seqTo: batch[batch.length - 1].seq,
         state: 'called',
+        delivery: 'delivered',
+        wake: 'pending',
       })
       if (current.wakeLog.length > 200) current.wakeLog.splice(0, current.wakeLog.length - 200)
       void persist()
@@ -688,6 +718,10 @@ export function apply(ctx) {
         }
         if (state.running) {
           record.sawRunning = true
+          if (record.wakeMarked !== true) {
+            record.wakeMarked = true
+            markWakeFields(record.requestId, { wake: 'started' })
+          }
           setMemberStatus(member.name, { running: true, queued: 0 })
           if (record.longNotified !== true && Date.now() - record.startedAt > LONG_TURN_NOTICE_MS) {
             record.longNotified = true
@@ -709,6 +743,9 @@ export function apply(ctx) {
     // Torn down mid-watch: leave `inflight` alone so the fresh instance picks
     // the answer up instead of racing it.
     if (disposed) return
+    // Never observed a turn: the prompt was accepted but the session stayed
+    // asleep. This is the failure that otherwise looks like success.
+    if (!record.sawRunning) markWakeFields(record.requestId, { wake: 'no_turn' })
     try {
       await harvest(member, record)
     } finally {
@@ -743,6 +780,18 @@ export function apply(ctx) {
     if (entry === undefined) return
     entry.state = state
     entry.doneAt = Date.now()
+    void persist()
+  }
+
+  // Two orthogonal fields, per 灯前: `delivery` says whether the message got
+  // out, `wake` says whether a turn actually started. `delivered + no_turn` is
+  // the failure that used to look exactly like success.
+  function markWakeFields(requestId, patch) {
+    if (typeof requestId !== 'string') return
+    const current = room()
+    const entry = (current?.wakeLog ?? []).find((item) => item.requestId === requestId)
+    if (entry === undefined) return
+    Object.assign(entry, patch)
     void persist()
   }
 
@@ -920,6 +969,8 @@ export function apply(ctx) {
         replied: todayWakes.filter((entry) => entry.state === 'replied').length,
         acked: todayWakes.filter((entry) => entry.state === 'acked').length,
         missed: todayMissed.length,
+        // Accepted, but no turn ever started — the failure that looks like success.
+        noTurn: todayWakes.filter((entry) => entry.wake === 'no_turn').length,
       },
       recentWakes: (current?.wakeLog ?? []).slice(-8),
     }
