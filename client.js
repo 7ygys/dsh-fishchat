@@ -93,10 +93,12 @@ window.__ModuleLoader__.load({
         const tick = async () => {
           if (document.visibilityState !== 'visible') return
           try {
-            const data = await getJson(`${roomBase()}/status`)
+            // Sum across every room: the icon speaks for the whole plugin, not
+            // just whichever room happens to be open.
+            const data = await getJson('/rooms')
             if (!alive) return
-            const user = (data.members ?? []).find((member) => member.kind === 'user')
-            setUnread(user?.unread ?? 0)
+            const total = (data.rooms ?? []).reduce((sum, room) => sum + (room.unread ?? 0), 0)
+            setUnread(total)
           } catch {
             /* transient: the host may be reloading */
           }
@@ -245,8 +247,16 @@ window.__ModuleLoader__.load({
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             },
           }, room.lastText === '' ? '还没有消息' : room.lastText)
+        ),
+        (room.unread ?? 0) > 0 && h('span', {
+          style: {
+            flex: '0 0 auto', minWidth: 16, height: 16, borderRadius: 8, padding: '0 4px',
+            background: '#fa5151', color: '#fff', fontSize: 10, lineHeight: '16px',
+            textAlign: 'center', fontWeight: 600,
+          },
+        }, room.unread > 99 ? '99+' : String(room.unread))
         ))
-      )))
+      ))
     }
 
     function TimeDivider({ at }) {
@@ -697,7 +707,12 @@ window.__ModuleLoader__.load({
         try {
           const data = await getJson(`${roomBase()}/messages`)
           setMessages(data.messages ?? [])
-          lastSeqRef.current = data.seq ?? 0
+          // Track the newest message IN THIS ROOM. `data.seq` is the global
+          // counter (it includes other rooms), so using it would skip messages.
+          const newest = (data.messages ?? []).length > 0
+            ? data.messages[data.messages.length - 1].seq
+            : 0
+          lastSeqRef.current = newest
           setMeta({ seq: data.seq, earliestSeq: data.earliestSeq, hasMore: data.hasMore, truncatedBefore: data.truncatedBefore })
           await postJson(`${roomBase()}/read`, {})
         } catch (error) {
@@ -748,7 +763,8 @@ window.__ModuleLoader__.load({
             const data = await getJson(`${roomBase()}/messages?since=${lastSeqRef.current}&limit=200`)
             if (!alive) return
             if (Array.isArray(data.messages) && data.messages.length > 0) {
-              lastSeqRef.current = Math.max(lastSeqRef.current, data.seq ?? 0)
+              const newest = data.messages[data.messages.length - 1].seq
+              lastSeqRef.current = Math.max(lastSeqRef.current, newest)
               setMessages((current) => [...current, ...data.messages])
               void postJson(`${roomBase()}/read`, {})
             }

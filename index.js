@@ -1130,13 +1130,6 @@ export function apply(ctx) {
       seq: db.seq,
       earliestSeq: db.earliestSeq,
       consecutiveAgent: current?.consecutiveAgent ?? 0,
-      debugDelivery,
-      debugFlush,
-      debugWindow: {
-        from: windowFromSeq,
-        timer: windowTimer !== null,
-        openedFor: windowOpenedAt === 0 ? 0 : Date.now() - windowOpenedAt,
-      },
       members,
       lastAck: ackEntries[0] ?? null,
       receipts: current?.receipts ?? {},
@@ -1159,8 +1152,12 @@ export function apply(ctx) {
     // have one number say "caught up" while the other says "5 behind".
     const read = Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0
     const seen = Number.isFinite(member.lastSeenSeq) ? member.lastSeenSeq : 0
-    const from = Math.max(read, seen)
-    return messages(roomId).filter((message) => message.seq > from).length
+    const list = messages(roomId)
+    const newest = list.length > 0 ? list[list.length - 1].seq : 0
+    // Older cursors were written with the global counter, which can sit beyond
+    // this room's newest message. Clamp, or a stale cursor marks it read forever.
+    const from = Math.min(Math.max(read, seen), newest)
+    return list.filter((message) => message.seq > from).length
   }
 
   // Candidate sessions for the member picker. `session/list` summaries carry no
@@ -1229,6 +1226,7 @@ export function apply(ctx) {
   function roomSummary(item) {
     const list = db.messages[item.id] ?? []
     const last = list.length > 0 ? list[list.length - 1] : null
+    const user = (item.members ?? []).find((member) => member.kind === 'user')
     return {
       id: item.id,
       title: item.title ?? '群',
@@ -1237,6 +1235,8 @@ export function apply(ctx) {
         name: member.name,
         avatar: typeof member.avatar === 'string' ? member.avatar : '',
       })),
+      // Unread for the user, so the room list can show a badge.
+      unread: user === undefined ? 0 : unreadCount(user, item.id),
       lastSeq: last?.seq ?? 0,
       lastAt: last?.at ?? item.createdAt ?? 0,
       lastText: last === null ? '' : String(last.text ?? '').replace(/\s+/g, ' ').slice(0, 40),
@@ -1427,7 +1427,11 @@ export function apply(ctx) {
       if (method === 'POST' && sub === '/read') {
         const user = userMember(roomId)
         if (user !== undefined) {
-          user.lastReadSeq = db.seq
+          // The room's own newest seq, not the global counter: `db.seq` counts
+          // messages from every room, so using it marked unrelated rooms read.
+          const list = messages(roomId)
+          user.lastReadSeq = list.length > 0 ? list[list.length - 1].seq : 0
+          user.lastSeenSeq = user.lastReadSeq
           void persist()
         }
         return json(res, 200, { ok: true })
