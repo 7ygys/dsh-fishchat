@@ -15,7 +15,7 @@
 //     the turn it caused.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, extname, isAbsolute, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 const ROOM_ID = 'r1'
@@ -36,6 +36,28 @@ const POINTER_PREFIX = 'room-'
 const AGENT_HORN_EVERY = 20
 // How many missed messages one pointer may ask a member to catch up on.
 const BACKFILL_MAX = 12
+
+// Uploaded attachments live beside the room log, not inside it.
+const MAX_UPLOAD_BYTES = 60 * 1024 * 1024
+const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'])
+const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'ogv'])
+const MIME_BY_EXT = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml',
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', m4v: 'video/x-m4v', ogv: 'video/ogg',
+  pdf: 'application/pdf', txt: 'text/plain; charset=utf-8', md: 'text/markdown; charset=utf-8',
+  json: 'application/json; charset=utf-8', csv: 'text/csv; charset=utf-8', zip: 'application/zip',
+}
+
+function mimeOf(ext) {
+  return MIME_BY_EXT[ext] ?? 'application/octet-stream'
+}
+
+function kindOf(ext) {
+  if (IMAGE_EXT.has(ext)) return 'image'
+  if (VIDEO_EXT.has(ext)) return 'video'
+  return 'file'
+}
 // A bare acknowledgement answered in words is not worth a bubble. `room_ack`
 // is the supported way to say it; this only catches the model's habit.
 const CONFIRM_ONLY = /^(看过了|收到|明白了?|已读|了解|收到啦|知道了|看见了)[。.!！~～…\s]*$/
@@ -62,6 +84,7 @@ function emptyDb() {
         createdAt: now,
         deleted: false,
         wakeEnabled: true,
+        background: { type: 'color', value: '' },
         activity: null,
         acks: {},
         members: [{ kind: 'user', name: '我', lastReadSeq: 0 }],
@@ -158,6 +181,10 @@ export function apply(ctx) {
         deleted: room.deleted === true,
         wakeEnabled: room.wakeEnabled !== false,
         muteAgentToAgent: room.muteAgentToAgent === true,
+        // Empty value means "follow the theme".
+        background: room.background !== null && typeof room.background === 'object'
+          ? { type: room.background.type === 'image' ? 'image' : 'color', value: String(room.background.value ?? '') }
+          : { type: 'color', value: '' },
         activity: room.activity ?? null,
         acks: room.acks ?? {},
         receipts: room.receipts ?? {},
@@ -257,7 +284,30 @@ export function apply(ctx) {
     return join(dirname(FILE), 'rooms-blobs', name)
   }
 
-  function appendMessage({ from, kind, text, memberId, quote, root }) {
+  function filesDir() {
+    return join(dirname(FILE), 'rooms-files')
+  }
+
+  // Raw bytes, for uploads: the JSON body reader is no use for a PNG.
+  function readBodyBuffer(req) {
+    return new Promise((resolve, reject) => {
+      const chunks = []
+      let size = 0
+      req.on('data', (chunk) => {
+        size += chunk.length
+        if (size > MAX_UPLOAD_BYTES) {
+          reject(new Error('file too large'))
+          req.destroy()
+          return
+        }
+        chunks.push(chunk)
+      })
+      req.on('end', () => resolve(Buffer.concat(chunks)))
+      req.on('error', reject)
+    })
+  }
+
+  function appendMessage({ from, kind, text, memberId, quote, root, attachments }) {
     trimHistory()
     db.seq += 1
     const seq = db.seq
@@ -293,6 +343,7 @@ export function apply(ctx) {
       // The directory this message's `@path` references are relative to. It
       // lives on the message, not the room: whoever wrote it has their own cwd.
       ...(root === undefined ? {} : { root }),
+      ...(Array.isArray(attachments) && attachments.length > 0 ? { attachments } : {}),
       ...(blob === null ? {} : { blob }),
     }
     db.messages[ROOM_ID].push(message)
@@ -926,6 +977,7 @@ export function apply(ctx) {
       at: message.at,
       ...(message.memberId === undefined ? {} : { memberId: message.memberId }),
       ...(message.root === undefined ? {} : { root: message.root }),
+      ...(message.attachments === undefined ? {} : { attachments: message.attachments }),
       ...(message.quote === undefined ? {} : { quote: message.quote }),
       ...(message.blob === undefined ? {} : { blob: message.blob }),
     }))
@@ -1115,10 +1167,56 @@ export function apply(ctx) {
           return json(res, 200, { root, dir: rel, items: [], error: String(error?.message ?? error) })
         }
       }
+      if (method === 'POST' && path === '/rooms/r1/upload') {
+        const name = (url.searchParams.get('name') ?? 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 120)
+        let buffer
+        try {
+          buffer = await readBodyBuffer(req)
+        } catch (error) {
+          return json(res, 413, { error: String(error?.message ?? error) })
+        }
+        if (buffer.length === 0) return json(res, 400, { error: 'empty upload' })
+        const ext = extname(name).slice(1).toLowerCase() || 'bin'
+        const id = `${randomUUID()}.${ext}`
+        try {
+          mkdirSync(filesDir(), { recursive: true })
+          writeFileSync(join(filesDir(), id), buffer)
+        } catch (error) {
+          return json(res, 500, { error: String(error?.message ?? error) })
+        }
+        return json(res, 200, {
+          id,
+          name,
+          size: buffer.length,
+          mime: mimeOf(ext),
+          kind: kindOf(ext),
+        })
+      }
+      if (method === 'GET' && path.startsWith('/rooms/r1/file/')) {
+        const id = path.slice('/rooms/r1/file/'.length)
+        // Only ids we generated: no traversal, no separators.
+        if (!/^[0-9a-fA-F-]{36}\.[0-9a-z]{1,8}$/.test(id)) return json(res, 400, { error: 'bad id' })
+        const full = join(filesDir(), id)
+        if (!existsSync(full)) return json(res, 404, { error: 'missing' })
+        try {
+          const data = readFileSync(full)
+          res.writeHead(200, {
+            'content-type': mimeOf(extname(id).slice(1).toLowerCase()),
+            'content-length': data.length,
+            'cache-control': 'public, max-age=31536000, immutable',
+            'x-content-type-options': 'nosniff',
+          })
+          res.end(data)
+        } catch (error) {
+          json(res, 500, { error: String(error?.message ?? error) })
+        }
+        return
+      }
       if (method === 'POST' && path === '/rooms/r1/say') {
         const body = await readBody(req)
         const text = typeof body.text === 'string' ? body.text.trim() : ''
-        if (text === '') return json(res, 400, { error: 'text is required' })
+        const hasFiles = Array.isArray(body.attachments) && body.attachments.length > 0
+        if (text === '' && !hasFiles) return json(res, 400, { error: 'text is required' })
         const rawQuote = body.quote
         const quote = rawQuote !== null && typeof rawQuote === 'object' && Number.isFinite(rawQuote.seq)
           ? {
@@ -1134,6 +1232,21 @@ export function apply(ctx) {
           memberId: 'user',
           ...(quote === undefined ? {} : { quote }),
           ...(typeof body.root === 'string' && body.root !== '' ? { root: body.root.slice(0, 400) } : {}),
+          ...(Array.isArray(body.attachments)
+            ? {
+              attachments: body.attachments
+                .filter((item) => item !== null && typeof item === 'object'
+                  && typeof item.id === 'string' && typeof item.name === 'string')
+                .slice(0, 9)
+                .map((item) => ({
+                  id: item.id,
+                  name: item.name.slice(0, 160),
+                  mime: String(item.mime ?? ''),
+                  size: Number(item.size) || 0,
+                  kind: item.kind === 'image' || item.kind === 'video' ? item.kind : 'file',
+                })),
+            }
+            : {}),
         })
         scheduleDeliveryWindow(message)
         return json(res, 200, { message })
@@ -1163,6 +1276,18 @@ export function apply(ctx) {
           void persist()
         }
         return json(res, 200, { muteAgentToAgent: current?.muteAgentToAgent === true })
+      }
+      if (method === 'POST' && path === '/rooms/r1/background') {
+        const body = await readBody(req)
+        const current = room()
+        if (current !== undefined) {
+          current.background = {
+            type: body.type === 'image' ? 'image' : 'color',
+            value: String(body.value ?? '').slice(0, 400),
+          }
+          void persist()
+        }
+        return json(res, 200, { background: current?.background })
       }
       if (method === 'POST' && path === '/rooms/r1/title') {
         const body = await readBody(req)

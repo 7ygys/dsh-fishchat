@@ -251,6 +251,43 @@ window.__ModuleLoader__.load({
             opacity: 0.8, whiteSpace: 'pre-wrap', cursor: 'help',
           },
         }, `${message.quote.from}：${message.quote.text}`),
+        Array.isArray(message.attachments) && message.attachments.length > 0 && h('div', {
+          style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: String(message.text ?? '') === '' ? 0 : 7 },
+        },
+        message.attachments.map((file) => {
+          const src = `${ROOM}/file/${file.id}`
+          if (file.kind === 'image') {
+            return h('img', {
+              key: file.id,
+              src,
+              alt: file.name,
+              title: file.name,
+              style: { maxWidth: 220, maxHeight: 220, borderRadius: 6, display: 'block' },
+            })
+          }
+          if (file.kind === 'video') {
+            return h('video', {
+              key: file.id,
+              src,
+              controls: true,
+              preload: 'metadata',
+              style: { maxWidth: 260, maxHeight: 220, borderRadius: 6, display: 'block' },
+            })
+          }
+          return h('a', {
+            key: file.id,
+            href: src,
+            download: file.name,
+            target: '_blank',
+            rel: 'noreferrer',
+            title: file.name,
+            style: {
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 6,
+              background: 'rgba(43,127,212,.12)', color: 'var(--dsw-alias-brand-primary)',
+              textDecoration: 'none', fontSize: 12, maxWidth: 240, overflow: 'hidden',
+            },
+          }, `附件 ${file.name}`)
+        })),
         h('div', null, ...renderBody(message.text))
         ),
         message.blob !== undefined && h('div', {
@@ -466,6 +503,12 @@ window.__ModuleLoader__.load({
       const [atPicker, setAtPicker] = useState(null) // { dir, items, query, start }
       // `#name` / `¥name` completion: same idea, members instead of files.
       const [mentionPicker, setMentionPicker] = useState(null) // { symbol, query, items }
+      // Files waiting to be sent with the next message.
+      const [attachments, setAttachments] = useState([])
+      const [dragging, setDragging] = useState(false)
+      const fileInputRef = useRef(null)
+      const [bgPanel, setBgPanel] = useState(false)
+      const bgInputRef = useRef(null)
       const atStartRef = useRef(0)
       const editorRef = useRef(null)
       // Directory this user's `@path` tokens are relative to.
@@ -602,9 +645,11 @@ window.__ModuleLoader__.load({
 
       const send = async () => {
         const text = readEditor()
-        if (text === '') return
+        if (text === '' && attachments.length === 0) return
         if (editorRef.current !== null) editorRef.current.innerHTML = ''
         setHasText(false)
+        const outgoing = attachments
+        setAttachments([])
         // Clearing the DOM does not fire `input`, so the pickers must be closed
         // by hand or they stay pinned over an empty composer.
         setAtPicker(null)
@@ -618,6 +663,7 @@ window.__ModuleLoader__.load({
         try {
           await postJson(`${ROOM}/say`, {
             text,
+            ...(outgoing.length === 0 ? {} : { attachments: outgoing }),
             ...(fileRootRef.current === '' ? {} : { root: fileRootRef.current }),
           })
           const data = await getJson(`${ROOM}/messages?since=${lastSeqRef.current}&limit=200`)
@@ -775,6 +821,44 @@ window.__ModuleLoader__.load({
         insertChip('quote', snippet, snippet, message.seq)
       }
 
+      const setBackground = async (background) => {
+        try {
+          await postJson(`${ROOM}/background`, background)
+          void refreshStatus()
+        } catch (error) {
+          setError(String(error?.message ?? error))
+        }
+      }
+
+      const uploadBackground = async (file) => {
+        if (file === undefined || file === null) return
+        try {
+          const response = await fetch(`${ROOM}/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const meta = await response.json()
+          await setBackground({ type: 'image', value: meta.id })
+        } catch (error) {
+          setError(`背景上传失败：${String(error?.message ?? error)}`)
+        }
+      }
+
+      const uploadFiles = async (fileList) => {
+        const list = Array.from(fileList ?? []).slice(0, 9)
+        for (const file of list) {
+          try {
+            const response = await fetch(`${ROOM}/upload?name=${encodeURIComponent(file.name)}`, {
+              method: 'POST',
+              body: file,
+            })
+            if (!response.ok) throw new Error(`HTTP ${response.status}`)
+            const meta = await response.json()
+            setAttachments((current) => [...current, meta].slice(0, 9))
+          } catch (error) {
+            setError(`上传失败：${file.name}（${String(error?.message ?? error)}）`)
+          }
+        }
+      }
+
       const insertText = (value) => {
         const node = editorRef.current
         if (node === null) return
@@ -897,11 +981,28 @@ window.__ModuleLoader__.load({
       const agents = (status?.members ?? []).filter((member) => member.kind === 'agent')
       const wakeOn = status?.room?.wakeEnabled !== false
       const muted = status?.room?.muteAgentToAgent === true
+      const bg = status?.room?.background
+      const roomBackground = bg?.type === 'image' && bg.value !== ''
+        ? `url("${ROOM}/file/${bg.value}") center / cover no-repeat`
+        : (bg?.value !== '' && bg?.value !== undefined ? bg.value : 'var(--dsw-alias-bg-base)')
 
       return h('div', {
         style: {
           position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
-          background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit',
+          background: roomBackground, color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit',
+          outline: dragging ? '2px dashed var(--dsw-alias-brand-primary)' : 'none', outlineOffset: -6,
+        },
+        onDragOver: (event) => {
+          event.preventDefault()
+          if (!dragging) setDragging(true)
+        },
+        onDragLeave: (event) => {
+          if (event.currentTarget === event.target) setDragging(false)
+        },
+        onDrop: (event) => {
+          event.preventDefault()
+          setDragging(false)
+          void uploadFiles(event.dataTransfer?.files)
         },
       },
       // status bar
@@ -953,8 +1054,13 @@ window.__ModuleLoader__.load({
         status.wakeStats.failed > 0 ? `失败 ${status.wakeStats.failed}` : null,
       ].filter(Boolean).join(' · ')),
       h('button', {
+        onClick: () => setBgPanel(!bgPanel),
+        title: '聊天背景',
+        style: { padding: '4px 8px', fontSize: 12, borderRadius: 4, border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', cursor: 'pointer', color: 'inherit' },
+      }, '背景'),
+      h('button', {
         onClick: () => setPicker(true),
-        style: { padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--dsw-alias-border-l1)', background: '#fff', cursor: 'pointer' },
+        style: { padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', cursor: 'pointer', color: 'inherit' },
       }, '成员'),
       h('button', {
         onClick: toggleWake,
@@ -1016,6 +1122,73 @@ window.__ModuleLoader__.load({
         style: { position: 'absolute', left: 14, right: 14, bottom: 78, color: '#c0392b', fontSize: 12, background: '#fff4f2', padding: '6px 10px', borderRadius: 4 },
         onClick: () => setError(null),
       }, error),
+      // files waiting to go out with the next message
+      attachments.length > 0 && h('div', {
+        style: {
+          flex: '0 0 auto', display: 'flex', gap: 6, flexWrap: 'wrap', padding: '6px 10px',
+          background: 'var(--dsw-alias-bg-layer-2)', borderTop: '1px solid var(--dsw-alias-border-l1)',
+        },
+      },
+      attachments.map((file) => h('div', {
+        key: file.id,
+        style: {
+          display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 5,
+          background: 'var(--dsw-alias-bg-base)', fontSize: 11,
+        },
+      },
+      file.kind === 'image'
+        ? h('img', { src: `${ROOM}/file/${file.id}`, alt: '', style: { width: 22, height: 22, objectFit: 'cover', borderRadius: 3 } })
+        : h('span', null, file.kind === 'video' ? '视频' : '文件'),
+      h('span', { style: { maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, file.name),
+      h('button', {
+        onClick: () => setAttachments((current) => current.filter((item) => item.id !== file.id)),
+        title: '移除',
+        style: { border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', padding: 0, fontSize: 12 },
+      }, '×')
+      ))
+      ),
+      // background picker
+      bgPanel && h('div', {
+        style: {
+          position: 'absolute', top: 48, right: 12, zIndex: 30, width: 232,
+          background: 'var(--dsw-alias-bg-overlay)', border: '1px solid var(--dsw-alias-border-l2)',
+          borderRadius: 8, padding: 10, boxShadow: '0 8px 24px rgba(0,0,0,.25)',
+          display: 'flex', flexDirection: 'column', gap: 8,
+        },
+      },
+      h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '背景颜色'),
+      h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+        ['', '#f2f2f2', '#e8f0e0', '#eef2f7', '#f7f0e8', '#2b2b2b', '#1d2b36'].map((color) => h('button', {
+          key: color === '' ? 'theme' : color,
+          onClick: () => { void setBackground({ type: 'color', value: color }) },
+          title: color === '' ? '跟随主题' : color,
+          style: {
+            width: 26, height: 26, borderRadius: 4, cursor: 'pointer',
+            border: '1px solid var(--dsw-alias-border-l2)',
+            background: color === '' ? 'var(--dsw-alias-bg-base)' : color,
+            color: 'var(--dsw-alias-label-secondary)', fontSize: 12,
+          },
+        }, color === '' ? '⟳' : ''))
+      ),
+      h('button', {
+        onClick: () => bgInputRef.current?.click(),
+        style: {
+          padding: '6px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
+          border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)',
+          color: 'var(--dsw-alias-label-primary)',
+        },
+      }, '用图片做背景'),
+      h('input', {
+        ref: bgInputRef,
+        type: 'file',
+        accept: 'image/*',
+        style: { display: 'none' },
+        onChange: (event) => {
+          void uploadBackground(event.target.files?.[0])
+          event.target.value = ''
+        },
+      })
+      ),
       // `@` file picker
       atPicker !== null && h('div', {
         style: {
@@ -1072,6 +1245,25 @@ window.__ModuleLoader__.load({
       h('div', {
         style: { flex: '0 0 auto', borderTop: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' },
       },
+      h('button', {
+        onClick: () => fileInputRef.current?.click(),
+        title: '添加图片 / 视频 / 文件（也可以直接拖进窗口）',
+        style: {
+          height: 38, width: 38, borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2)',
+          background: 'var(--dsw-alias-bg-layer-1)', cursor: 'pointer', fontSize: 15, flex: '0 0 auto',
+          color: 'var(--dsw-alias-label-primary)',
+        },
+      }, '📎'),
+      h('input', {
+        ref: fileInputRef,
+        type: 'file',
+        multiple: true,
+        style: { display: 'none' },
+        onChange: (event) => {
+          void uploadFiles(event.target.files)
+          event.target.value = ''
+        },
+      }),
       h('div', {
         style: { flex: 1, position: 'relative', minWidth: 0 },
       },
