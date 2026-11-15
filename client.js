@@ -605,6 +605,10 @@ window.__ModuleLoader__.load({
         if (text === '') return
         if (editorRef.current !== null) editorRef.current.innerHTML = ''
         setHasText(false)
+        // Clearing the DOM does not fire `input`, so the pickers must be closed
+        // by hand or they stay pinned over an empty composer.
+        setAtPicker(null)
+        setMentionPicker(null)
         try {
           localStorage.removeItem('dsh-rooms:draft')
         } catch {
@@ -834,7 +838,8 @@ window.__ModuleLoader__.load({
         before.setStart(node, 0)
         const text = before.toString()
         const at = text.lastIndexOf('@')
-        const hash = Math.max(text.lastIndexOf('#'), text.lastIndexOf('¥'))
+        // Both the half-width ¥ and the full-width ￥ must trigger.
+        const hash = Math.max(text.lastIndexOf('#'), text.lastIndexOf('¥'), text.lastIndexOf('￥'))
         const atOpen = at >= 0 && !/\s/.test(text.slice(at + 1))
         const hashOpen = hash >= 0 && !/\s/.test(text.slice(hash + 1))
         // Whichever trigger is closer to the caret wins.
@@ -1068,6 +1073,32 @@ window.__ModuleLoader__.load({
         suppressContentEditableWarning: true,
         onInput: onEditorInput,
         onKeyDown: (event) => {
+          // While a picker is open, Enter picks instead of sending: typing "#"
+          // and pressing Enter must not post a bare "#".
+          if (mentionPicker !== null && mentionPicker.items.length > 0) {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              pickMention(mentionPicker.items[0].name)
+              return
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              setMentionPicker(null)
+              return
+            }
+          }
+          if (atPicker !== null && atPicker.items.length > 0) {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              pickEntry(atPicker.items[0])
+              return
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              setAtPicker(null)
+              return
+            }
+          }
           if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {
             event.preventDefault()
             void send()
