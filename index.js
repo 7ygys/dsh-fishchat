@@ -617,20 +617,10 @@ export function apply(ctx) {
     return out
   }
 
-  let debugDelivery = null
-  let debugFlush = null
 
   async function deliverBatch(batch, normalized, senderName, roomId = ROOM_ID) {
     const current = room(roomId)
     if (current === undefined || current.deleted || current.wakeEnabled === false) {
-      debugDelivery = {
-        at: Date.now(),
-        stage: 'early-return',
-        roomFound: current !== undefined,
-        deleted: current?.deleted === true,
-        wakeEnabled: current?.wakeEnabled,
-        roomId,
-      }
       return
     }
     // A name that matches nobody is a failure, not a silence — but only shout
@@ -659,7 +649,6 @@ export function apply(ctx) {
     }
     const { mode, targets, work, attention } = classifyBatch(normalized, senderName, roomId)
     if (targets.length === 0) {
-      debugDelivery = { at: Date.now(), stage: 'no-targets', mode, roomId }
       return
     }
     const targetNames = targets.map((member) => member.name)
@@ -681,19 +670,9 @@ export function apply(ctx) {
   async function flushUserWindow(fromSeq, roomId = ROOM_ID) {
     const current = room(roomId)
     if (current === undefined || current.deleted || current.wakeEnabled === false) {
-      debugFlush = { at: Date.now(), stage: 'early', roomId, found: current !== undefined, wake: current?.wakeEnabled }
       return
     }
     const batch = messages(roomId).filter((message) => message.seq >= fromSeq && message.kind === 'user')
-    debugFlush = {
-      at: Date.now(),
-      stage: 'batch',
-      roomId,
-      fromSeq,
-      total: messages(roomId).length,
-      count: batch.length,
-      tail: messages(roomId).slice(-2).map((message) => `${message.seq}:${message.kind}`),
-    }
     if (batch.length === 0) return
     // Match on the text as written; see `symbolMentions` for why we do not fold.
     const plain = batch.map((message) => String(message.text ?? '')).join('\n')
