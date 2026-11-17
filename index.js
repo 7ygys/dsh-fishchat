@@ -87,6 +87,9 @@ function emptyDb() {
         background: { type: 'color', value: '' },
         activity: null,
         acks: {},
+        // Oldest seq still present in this room's log. Cleanup is per room, so
+        // the cursor that tells "this message was already trimmed" must be too.
+        earliestSeq: 1,
         members: [{ kind: 'user', name: '我', lastReadSeq: 0 }],
       },
     },
@@ -144,6 +147,9 @@ export function apply(ctx) {
   // member can be in several rooms and the tool call carries no room id.
   // Declared up here because deliverTo() writes to it on every delivery.
   const lastRoomBySession = new Map()
+  // Rooms deleted in this instance. `mergeDiskBeforeWrite` must not re-adopt
+  // them from disk as "a room another window created": they were just removed.
+  const deletedRooms = new Set()
   const runtime = new Map() // sessionId -> { lastSayAt, lastAckAt }
   const memberState = new Map() // name -> { live, running, queued }
   let windowTimer = null
@@ -167,50 +173,61 @@ export function apply(ctx) {
     }
   }
 
+  // One room's shape. `fallbackEarliest` is the legacy global counter, used
+  // when an older file has no per-room value yet.
+  function normalizeRoom(id, room, fallbackEarliest = 1) {
+    return {
+      id,
+      title: typeof room.title === 'string' ? room.title : '群',
+      createdAt: Number.isFinite(room.createdAt) ? room.createdAt : Date.now(),
+      deleted: room.deleted === true,
+      wakeEnabled: room.wakeEnabled !== false,
+      muteAgentToAgent: room.muteAgentToAgent === true,
+      // Empty value means "follow the theme".
+      background: room.background !== null && typeof room.background === 'object'
+        ? { type: room.background.type === 'image' ? 'image' : 'color', value: String(room.background.value ?? '') }
+        : { type: 'color', value: '' },
+      activity: room.activity ?? null,
+      acks: room.acks ?? {},
+      receipts: room.receipts ?? {},
+      inflight: room.inflight ?? {},
+      wakeLog: Array.isArray(room.wakeLog) ? room.wakeLog : [],
+      consecutiveAgent: Number.isFinite(room.consecutiveAgent) ? room.consecutiveAgent : 0,
+      earliestSeq: Number.isFinite(room.earliestSeq)
+        ? room.earliestSeq
+        : (Number.isFinite(fallbackEarliest) ? fallbackEarliest : 1),
+      members: Array.isArray(room.members)
+        ? room.members
+          .filter((m) => m && typeof m.name === 'string')
+          .map((m) => (m.kind === 'agent'
+          ? {
+            ...m,
+            active: m.active !== false,
+            // Highest seq this member has SEEN, by any read mode. `lastReadSeq`
+            // is the "give me the next ones" cursor; this one only exists so a
+            // re-read cannot make an old batch look unread.
+            lastSeenSeq: Number.isFinite(m.lastSeenSeq) ? m.lastSeenSeq : 0,
+            ...(typeof m.cwd === 'string' && m.cwd !== '' ? { cwd: m.cwd } : {}),
+          }
+          : m))
+        : [],
+    }
+  }
+
   function normalizeDb(input) {
     const base = emptyDb()
     if (input === null || typeof input !== 'object') return base
+    const fallbackEarliest = Number.isFinite(input.earliestSeq) ? input.earliestSeq : 1
     const db2 = {
       seq: Number.isFinite(input.seq) ? input.seq : 0,
-      earliestSeq: Number.isFinite(input.earliestSeq) ? input.earliestSeq : 1,
+      // Kept for compatibility with files written before per-room earliestSeq.
+      earliestSeq: fallbackEarliest,
       rooms: {},
       messages: {},
     }
     for (const [id, room] of Object.entries(input.rooms ?? {})) {
       if (room === null || typeof room !== 'object') continue
-      db2.rooms[id] = {
-        id,
-        title: typeof room.title === 'string' ? room.title : '群',
-        createdAt: Number.isFinite(room.createdAt) ? room.createdAt : Date.now(),
-        deleted: room.deleted === true,
-        wakeEnabled: room.wakeEnabled !== false,
-        muteAgentToAgent: room.muteAgentToAgent === true,
-        // Empty value means "follow the theme".
-        background: room.background !== null && typeof room.background === 'object'
-          ? { type: room.background.type === 'image' ? 'image' : 'color', value: String(room.background.value ?? '') }
-          : { type: 'color', value: '' },
-        activity: room.activity ?? null,
-        acks: room.acks ?? {},
-        receipts: room.receipts ?? {},
-        inflight: room.inflight ?? {},
-        wakeLog: Array.isArray(room.wakeLog) ? room.wakeLog : [],
-        consecutiveAgent: Number.isFinite(room.consecutiveAgent) ? room.consecutiveAgent : 0,
-        members: Array.isArray(room.members)
-          ? room.members
-            .filter((m) => m && typeof m.name === 'string')
-            .map((m) => (m.kind === 'agent'
-            ? {
-              ...m,
-              active: m.active !== false,
-              // Highest seq this member has SEEN, by any read mode. `lastReadSeq`
-              // is the "give me the next ones" cursor; this one only exists so a
-              // re-read cannot make an old batch look unread.
-              lastSeenSeq: Number.isFinite(m.lastSeenSeq) ? m.lastSeenSeq : 0,
-              ...(typeof m.cwd === 'string' && m.cwd !== '' ? { cwd: m.cwd } : {}),
-            }
-            : m))
-          : [],
-      }
+      db2.rooms[id] = normalizeRoom(id, room, fallbackEarliest)
       db2.messages[id] = Array.isArray(input.messages?.[id]) ? input.messages[id] : []
     }
     if (db2.rooms[ROOM_ID] === undefined) db2.rooms[ROOM_ID] = base.rooms[ROOM_ID]
@@ -229,15 +246,37 @@ export function apply(ctx) {
     } catch {
       return
     }
-    if (!Number.isFinite(disk?.seq) || disk.seq <= db.seq) return
-    const known = new Set(messages().map((message) => message.seq))
-    const incoming = (disk.messages?.[ROOM_ID] ?? [])
-      .filter((message) => Number.isFinite(message?.seq) && !known.has(message.seq))
-    if (incoming.length > 0) {
-      db.messages[ROOM_ID].push(...incoming)
-      db.messages[ROOM_ID].sort((left, right) => left.seq - right.seq)
+    if (disk === null || typeof disk !== 'object') return
+    // Rooms created by another window are unknown to this process: take them
+    // over first, otherwise their messages would have nowhere to merge into.
+    for (const [roomId, diskRoom] of Object.entries(disk.rooms ?? {})) {
+      if (db.rooms[roomId] !== undefined || deletedRooms.has(roomId)) continue
+      if (diskRoom === null || typeof diskRoom !== 'object' || diskRoom.deleted === true) continue
+      db.rooms[roomId] = normalizeRoom(roomId, diskRoom, disk.earliestSeq)
+      db.messages[roomId] = []
     }
-    db.seq = Math.max(db.seq, disk.seq)
+    // Merge message logs room by room; the global counter alone is not enough.
+    for (const [roomId, list] of Object.entries(disk.messages ?? {})) {
+      if (!Array.isArray(list) || db.messages[roomId] === undefined) continue
+      const known = new Set(db.messages[roomId].map((message) => message.seq))
+      const incoming = list.filter((message) => Number.isFinite(message?.seq) && !known.has(message.seq))
+      if (incoming.length > 0) {
+        db.messages[roomId].push(...incoming)
+        db.messages[roomId].sort((left, right) => left.seq - right.seq)
+      }
+    }
+    // A window that has not trimmed yet may still hold older history: keep the
+    // smaller earliest seq per room so we never claim more was cleaned than was.
+    for (const [roomId, diskRoom] of Object.entries(disk.rooms ?? {})) {
+      const local = db.rooms[roomId]
+      if (local === undefined || diskRoom === null || typeof diskRoom !== 'object') continue
+      if (Number.isFinite(diskRoom.earliestSeq)) {
+        local.earliestSeq = Number.isFinite(local.earliestSeq)
+          ? Math.min(local.earliestSeq, diskRoom.earliestSeq)
+          : diskRoom.earliestSeq
+      }
+    }
+    db.seq = Math.max(db.seq, Number.isFinite(disk.seq) ? disk.seq : 0)
     if (Number.isFinite(disk.earliestSeq)) db.earliestSeq = Math.min(db.earliestSeq, disk.earliestSeq)
   }
 
@@ -263,6 +302,19 @@ export function apply(ctx) {
     return db.messages[id] ?? []
   }
 
+  // Oldest seq still alive in ONE room. Files written before the split kept a
+  // single global counter, so that value seeds every room as a fallback.
+  function roomEarliest(roomId = ROOM_ID) {
+    const current = room(roomId)
+    if (Number.isFinite(current?.earliestSeq)) return current.earliestSeq
+    return Number.isFinite(db.earliestSeq) ? db.earliestSeq : 1
+  }
+
+  function newestSeq(roomId = ROOM_ID) {
+    const list = messages(roomId)
+    return list.length > 0 ? list[list.length - 1].seq : 0
+  }
+
   // ------------------------------------------------------------------ time
 
   function trimHistory(roomId = ROOM_ID) {
@@ -273,13 +325,14 @@ export function apply(ctx) {
     const kept = list.filter((message) => message.at >= cutoff)
     if (kept.length === list.length) return
     db.messages[roomId] = kept
-    db.earliestSeq = kept.length > 0 ? kept[0].seq : db.seq + 1
+    const earliest = kept.length > 0 ? kept[0].seq : db.seq + 1
+    current.earliestSeq = earliest
     // No marker message on purpose: it would need a seq, and any seq newer than
     // the kept messages would break the ascending order every cursor relies on.
     // The client renders `truncatedBefore` instead.
     for (const member of current.members ?? []) {
-      if (Number.isFinite(member.lastReadSeq) && member.lastReadSeq < db.earliestSeq - 1) {
-        member.lastReadSeq = db.earliestSeq - 1
+      if (Number.isFinite(member.lastReadSeq) && member.lastReadSeq < earliest - 1) {
+        member.lastReadSeq = earliest - 1
       }
     }
   }
@@ -1111,7 +1164,7 @@ export function apply(ctx) {
           : { type: 'color', value: '' },
       },
       seq: db.seq,
-      earliestSeq: db.earliestSeq,
+      earliestSeq: roomEarliest(roomId),
       consecutiveAgent: current?.consecutiveAgent ?? 0,
       members,
       lastAck: ackEntries[0] ?? null,
@@ -1195,11 +1248,12 @@ export function apply(ctx) {
       page = all.slice(Math.max(0, all.length - limit))
       hasMore = all.length > page.length
     }
+    const earliest = roomEarliest(roomId)
     return {
       messages: publicMessages(page),
       seq: db.seq,
-      earliestSeq: db.earliestSeq,
-      truncatedBefore: db.earliestSeq > 1 ? db.earliestSeq : null,
+      earliestSeq: earliest,
+      truncatedBefore: earliest > 1 ? earliest : null,
       hasMore,
     }
   }
@@ -1276,9 +1330,11 @@ export function apply(ctx) {
         const current = room(roomId)
         if (current === undefined) return json(res, 404, { error: 'no room' })
         // Full deletion, not a tombstone: drop the room and its whole log so
-        // nothing is left behind on disk.
+        // nothing is left behind on disk. The in-memory set keeps the merge
+        // step from re-adopting it from the file that has not been rewritten yet.
         delete db.rooms[roomId]
         delete db.messages[roomId]
+        deletedRooms.add(roomId)
         void persist()
         return json(res, 200, { ok: true, deleted: roomId })
       }
@@ -1481,7 +1537,6 @@ export function apply(ctx) {
         )
         const agents = incoming
           .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.sessionId === 'string')
-          .slice(0, 3)
           .map((entry) => {
             const before = previous.get(entry.sessionId)
             const name = typeof entry.name === 'string' && entry.name.trim() !== ''
@@ -1661,7 +1716,7 @@ export function apply(ctx) {
       if (Number.isFinite(after)) {
         const page = all.filter((message) => message.seq > after).slice(0, limit)
         touchSeen(member, page)
-        return { messages: publicMessages(page), lastSeq: db.seq }
+        return { messages: publicMessages(page), lastSeq: newestSeq(roomId) }
       }
       const before = Number(args?.before)
       if (Number.isFinite(before)) {
@@ -1670,31 +1725,34 @@ export function apply(ctx) {
         touchSeen(member, page)
         // A tool result must be lossless JSON: an `undefined` value here fails
         // the whole output, which is what broke this branch.
-        const truncated = db.earliestSeq > 1 && before <= db.earliestSeq ? db.earliestSeq : undefined
+        const earliest = roomEarliest(roomId)
+        const truncated = earliest > 1 && before <= earliest ? earliest : undefined
         return {
           messages: publicMessages(page),
-          lastSeq: db.seq,
+          lastSeq: newestSeq(roomId),
           youAre: member.name,
           ...(truncated === undefined ? {} : { truncatedBefore: truncated }),
         }
       }
       const from = Number.isFinite(member.lastReadSeq) ? member.lastReadSeq : 0
+      const newest = newestSeq(roomId)
       // A cursor ahead of the log means the room was rebuilt or cleaned while
       // this member slept. Left alone it makes every future read answer "no new
       // messages" while pointers keep ringing — a silent deafness.
-      if (from > db.seq) {
-        const recent = messages().slice(-limit)
-        member.lastReadSeq = recent.length > 0 ? recent[recent.length - 1].seq : Math.max(0, db.earliestSeq - 1)
+      if (from > newest) {
+        const recent = messages(roomId).slice(-limit)
+        member.lastReadSeq = recent.length > 0 ? recent[recent.length - 1].seq : Math.max(0, roomEarliest(roomId) - 1)
         touchSeen(member, recent)
         void persist()
         return {
           messages: publicMessages(recent),
-          lastSeq: db.seq,
+          lastSeq: newest,
           youAre: member.name,
           cursorReset: true,
         }
       }
-      const truncatedBefore = db.earliestSeq > 1 && from < db.earliestSeq - 1 ? db.earliestSeq : undefined
+      const earliest = roomEarliest(roomId)
+      const truncatedBefore = earliest > 1 && from < earliest - 1 ? earliest : undefined
       const fresh = all.filter((message) => message.seq > from)
       const page = fresh.slice(0, limit)
       if (page.length > 0) {
@@ -1704,7 +1762,7 @@ export function apply(ctx) {
       }
       return {
         messages: publicMessages(page),
-        lastSeq: db.seq,
+        lastSeq: newest,
         youAre: member.name,
         ...(truncatedBefore === undefined ? {} : { truncatedBefore }),
       }
@@ -1796,17 +1854,20 @@ export function apply(ctx) {
   // A queued record that never got honoured must not sit in the ledger looking
   // like "still pending": after QUEUED_TIMEOUT_MS it becomes a visible failure.
   function sweepQueued() {
-    const current = room()
-    if (current?.wakeLog === undefined) return
     const cutoff = Date.now() - QUEUED_TIMEOUT_MS
     let changed = false
-    for (const entry of current.wakeLog) {
-      if (entry.state === 'queued' && entry.at < cutoff) {
-        entry.state = 'failed'
-        entry.delivery = 'failed'
-        entry.detail = 'timeout'
-        entry.doneAt = Date.now()
-        changed = true
+    // Every room keeps its own ledger; sweeping only r1 left other rooms'
+    // `queued` rows pending forever.
+    for (const current of Object.values(db.rooms)) {
+      if (current?.wakeLog === undefined) continue
+      for (const entry of current.wakeLog) {
+        if (entry.state === 'queued' && entry.at < cutoff) {
+          entry.state = 'failed'
+          entry.delivery = 'failed'
+          entry.detail = 'timeout'
+          entry.doneAt = Date.now()
+          changed = true
+        }
       }
     }
     if (changed) void persist()
@@ -1915,7 +1976,7 @@ export function apply(ctx) {
     if (current?.inflight === undefined || Object.keys(current.inflight).length === 0) return
     let stillRunning = false
     for (const [sessionId, item] of Object.entries(current.inflight)) {
-      const member = agentMembers().find((candidate) => candidate.sessionId === sessionId)
+      const member = agentMembers(roomId).find((candidate) => candidate.sessionId === sessionId)
       if (member === undefined) {
         delete current.inflight[sessionId]
         continue
@@ -1949,5 +2010,5 @@ export function apply(ctx) {
     void persist()
   }
 
-  ctx.logger?.info?.(`rooms: ready, ${agentMembers().length} agent member(s), ${messages().length} message(s)`)
+  ctx.logger?.info?.(`rooms: ready, ${Object.keys(db.rooms).length} room(s), ${db.seq} message(s)`)
 }
