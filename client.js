@@ -497,6 +497,7 @@ window.__ModuleLoader__.load({
             delete next[item.sessionId]
             return next
           }
+          if (Object.keys(next).length >= 9) return next
           const short = String(item.title ?? item.cwd ?? '成员').replace(/[（(【\[].*$/, '').trim()
           next[item.sessionId] = { name: (short || '成员').slice(0, 4), active: true }
           return next
@@ -547,20 +548,23 @@ window.__ModuleLoader__.load({
       h('div', {
         style: { padding: '12px 16px', fontWeight: 600, borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between' },
       },
-      h('span', null, '选成员'),
-      h('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontWeight: 400, fontSize: 12 } }, `已选 ${Object.keys(selected).length}`)
+      h('span', null, '选成员（最多九条鱼）'),
+      h('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontWeight: 400, fontSize: 12 } }, `已选 ${Object.keys(selected).length}/9`)
       ),
       h('div', { style: { overflowY: 'auto', flex: 1 } },
         error !== null && h('div', { style: { padding: 12, color: '#c0392b' } }, error),
         items.length === 0 && h('div', { style: { padding: 16, color: 'var(--dsw-alias-label-secondary)' } }, '没有可选会话'),
         items.map((item) => {
           const picked = selected[item.sessionId] !== undefined
+          // Only block adding a tenth member; anything already picked can be
+          // unticked and re-ticked freely.
+          const disabled = !picked && Object.keys(selected).length >= 9
           return h('div', {
             key: item.sessionId,
-            onClick: () => toggle(item),
+            onClick: () => { if (!disabled) toggle(item) },
             style: {
-              padding: '9px 16px', borderBottom: '1px solid var(--dsw-alias-border-l1)', cursor: 'pointer',
-              background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+              padding: '9px 16px', borderBottom: '1px solid var(--dsw-alias-border-l1)', cursor: disabled ? 'default' : 'pointer',
+              background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'transparent', opacity: disabled ? 0.45 : 1,
             },
           },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },

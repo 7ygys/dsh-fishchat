@@ -462,10 +462,6 @@ export function apply(ctx) {
     return (current?.members ?? []).filter((member) => member.kind === 'agent' && typeof member.sessionId === 'string')
   }
 
-  function memberBySession(sessionId) {
-    return agentMembers().find((member) => member.sessionId === sessionId)
-  }
-
   function userMember(roomId = ROOM_ID) {
     return (room(roomId)?.members ?? []).find((member) => member.kind === 'user')
   }
@@ -1545,8 +1541,10 @@ export function apply(ctx) {
             .filter((member) => member.kind === 'agent' && typeof member.sessionId === 'string')
             .map((member) => [member.sessionId, member]),
         )
+        // A room holds at most 9 agents; the picker enforces the same number.
         const agents = incoming
           .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.sessionId === 'string')
+          .slice(0, 9)
           .map((entry) => {
             const before = previous.get(entry.sessionId)
             const name = typeof entry.name === 'string' && entry.name.trim() !== ''
@@ -1610,12 +1608,6 @@ export function apply(ctx) {
       if (member !== undefined) return { member, roomId }
     }
     return undefined
-  }
-
-  function callerMember(exec) {
-    const sessionId = exec?.agent?.id
-    if (typeof sessionId !== 'string') return undefined
-    return memberBySession(sessionId)
   }
 
   // Remember the highest seq this member has actually seen, whatever read mode
