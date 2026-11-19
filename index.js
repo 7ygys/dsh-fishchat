@@ -152,9 +152,9 @@ export function apply(ctx) {
   const deletedRooms = new Set()
   const runtime = new Map() // sessionId -> { lastSayAt, lastAckAt }
   const memberState = new Map() // name -> { live, running, queued }
-  let windowTimer = null
-  let windowFromSeq = 0
-  let windowOpenedAt = 0
+  // One delivery window per room. With a single global timer, a message in room
+  // B stole room A's window: A's batch was opened, reset, and never delivered.
+  const windows = new Map() // roomId -> { timer, fromSeq, openedAt }
   let recoverRetryTimer = null
   // Set when this plugin instance is torn down. Long-running loops must notice,
   // otherwise a reload leaves the old instance still watching sessions.
@@ -625,17 +625,22 @@ export function apply(ctx) {
   }
 
   function scheduleDeliveryWindow(message, roomId = ROOM_ID) {
-    if (windowFromSeq === 0) {
-      windowFromSeq = message.seq
-      windowOpenedAt = Date.now()
+    let win = windows.get(roomId)
+    if (win === undefined) {
+      win = { timer: null, fromSeq: 0, openedAt: 0 }
+      windows.set(roomId, win)
     }
-    if (windowTimer !== null) clearTimeout(windowTimer)
-    const waited = Date.now() - windowOpenedAt
+    if (win.fromSeq === 0) {
+      win.fromSeq = message.seq
+      win.openedAt = Date.now()
+    }
+    if (win.timer !== null) clearTimeout(win.timer)
+    const waited = Date.now() - win.openedAt
     const delay = Math.max(0, Math.min(DELIVERY_WINDOW_MS, DELIVERY_WINDOW_MAX_MS - waited))
-    windowTimer = setTimeout(() => {
-      const from = windowFromSeq
-      windowFromSeq = 0
-      windowTimer = null
+    win.timer = setTimeout(() => {
+      const from = win.fromSeq
+      win.fromSeq = 0
+      win.timer = null
       void flushUserWindow(from, roomId)
     }, delay)
   }
@@ -1335,6 +1340,11 @@ export function apply(ctx) {
         delete db.rooms[roomId]
         delete db.messages[roomId]
         deletedRooms.add(roomId)
+        const removedWindow = windows.get(roomId)
+        if (removedWindow !== undefined && removedWindow.timer !== null) {
+          clearTimeout(removedWindow.timer)
+        }
+        windows.delete(roomId)
         void persist()
         return json(res, 200, { ok: true, deleted: roomId })
       }
@@ -1940,8 +1950,11 @@ export function apply(ctx) {
   ctx.effect(() => ctx.tools.register(withCleanResult(ackTool)))
   ctx.effect(() => () => {
     disposed = true
-    if (windowTimer !== null) clearTimeout(windowTimer)
-    windowTimer = null
+    for (const win of windows.values()) {
+      if (win.timer !== null) clearTimeout(win.timer)
+      win.timer = null
+    }
+    windows.clear()
     if (recoverRetryTimer !== null) clearTimeout(recoverRetryTimer)
     recoverRetryTimer = null
   })
