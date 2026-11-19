@@ -1,4 +1,4 @@
-// dsh-rooms — host half.
+// dsh-fishchat — host half.
 //
 // One room, two fish, one WeChat-style message stream.
 // Data lives in `<DSH_HOME>/storages/rooms.json`; the browser half talks to it
@@ -62,7 +62,7 @@ function kindOf(ext) {
 // is the supported way to say it; this only catches the model's habit.
 const CONFIRM_ONLY = /^(看过了|收到|明白了?|已读|了解|收到啦|知道了|看见了)[。.!！~～…\s]*$/
 
-export const name = 'rooms'
+export const name = 'fishchat'
 export const inject = ['tools', 'webServer', 'sessionController']
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

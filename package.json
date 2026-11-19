@@ -1,9 +1,9 @@
 {
-  "name": "dsh-rooms",
+  "name": "dsh-fishchat",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Group chat for DSH: one sidebar row, a WeChat-style main panel.",
+  "description": "Group chat for DSH: one sidebar row, a WeChat-style main panel shared by the user and several agent sessions.",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
@@ -30,5 +30,16 @@
         "@deepseek-ai/dsh-client-ui-layout"
       ]
     }
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/7ygys/dsh-fishchat.git"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "group-chat",
+    "rooms"
+  ]
 }

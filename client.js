@@ -1,10 +1,10 @@
-// dsh-rooms — browser half.
+// dsh-fishchat — browser half.
 //
 // One sidebar row ("群") that selects one main panel: a WeChat-style group chat.
 // The host half owns the data; this file only draws it and posts to /rooms/r1.
 
 window.__ModuleLoader__.load({
-  id: 'dsh-rooms',
+  id: 'dsh-fishchat',
   factory(require) {
     const React = require('react')
     const h = React.createElement
