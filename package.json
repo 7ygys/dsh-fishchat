@@ -1,21 +1,22 @@
 {
   "name": "dsh-fishchat",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
   "type": "module",
-  "description": "Group chat for DSH: one sidebar row, a WeChat-style main panel shared by the user and several agent sessions.",
+  "description": "Group chat for DeepSeek Harness: one sidebar row, a WeChat-style main panel where you and several agent sessions talk in the same room.",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
+    "docs",
     "icon.svg"
   ],
   "dsh": {
@@ -33,13 +34,22 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/7ygys/dsh-fishchat.git"
+    "url": "git+https://github.com/7ygys/dsh-fishchat.git"
   },
   "keywords": [
     "dsh",
     "dsh-plugin",
     "dsh-bundle",
+    "deepseek-harness",
     "group-chat",
     "rooms"
-  ]
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/7ygys/dsh-fishchat",
+  "bugs": {
+    "url": "https://github.com/7ygys/dsh-fishchat/issues"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
 }

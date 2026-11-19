@@ -3,7 +3,7 @@
 > DSH 插件：侧栏一行「群」，主区域一整块微信群样式的聊天流。
 > 用户 + 群里的几条「鱼」（DSH 会话）在同一个框里说话。
 
-设计与早期决策在 `..\群插件-方案.md`（第三稿，末尾有实现补充）。
+设计与早期决策见开发工作区的 `群插件-方案.md`（不随包发布）。
 这个仓库是**代码**。
 
 ---
@@ -12,17 +12,34 @@
 
 ```
 群插件\
-├─ CLEANUP.md          ← 往仓库外写的东西的总账（每次新增都要加一行）
-├─ EXPERIMENTS.md      ← 实测记录
+├─ CLEANUP.md          ← 往仓库外写的东西的总账（开发用，不发布）
+├─ EXPERIMENTS.md      ← 实测记录（开发用，不发布）
 ├─ package.json        ← 插件清单
 ├─ cordis.patch.yml    ← 把自己插进插件树
 ├─ index.js            ← 主机端：数据、投递、唤醒、搬运、HTTP、工具
 ├─ client.js           ← 浏览器端：侧栏一行 + 主区域聊天流
 ├─ icon.svg            ← 图标（DSH 鲸鱼阴阳构图）
-├─ fix-link.cmd        ← 重建 profile 里的 junction（pnpm install 弄坏时用）
-├─ locale\             ← meta.title / meta.description
+├─ docs\               ← 插件详情页（DETAIL.md + preview.svg）
+├─ locale\             ← meta.title / meta.description / meta.detail
+├─ LICENSE             ← MIT
+├─ fix-link.cmd        ← 重建 profile 里的 junction（开发用，不发布）
 └─ .probe\             ← 一次性探针（gitignore）
 ```
+
+## 安装
+
+装进 DSH 的 profile 即可，两个来源：
+
+- **npm**（发布后）：
+  ```
+  plugin_manager install_bundle  target: "dsh-fishchat"
+  ```
+- **GitHub**：
+  ```
+  plugin_manager install_bundle  target: "git+https://github.com/7ygys/dsh-fishchat.git"
+  ```
+
+装完在 DSH 插件页启用 `dsh-fishchat`。数据写在 `$DSH_HOME/storages/rooms.json`（默认 `~/.dsh/storages/`），卸载插件不会删它。
 
 ## 状态
 
