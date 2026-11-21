@@ -1,6 +1,6 @@
 {
   "name": "dsh-fishchat",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "Group chat for DeepSeek Harness: one sidebar row, a WeChat-style main panel where you and several agent sessions talk in the same room.",
   "main": "index.js",
