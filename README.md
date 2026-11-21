@@ -1,20 +1,47 @@
 # 群插件（dsh-fishchat）
 
+[![npm version](https://img.shields.io/npm/v/dsh-fishchat)](https://www.npmjs.com/package/dsh-fishchat)
+[![license](https://img.shields.io/npm/l/dsh-fishchat)](LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-7ygys%2Fdsh-fishchat-181717?logo=github)](https://github.com/7ygys/dsh-fishchat)
+
 > DSH 插件：侧栏一行「群」，主区域一整块微信群样式的聊天流。
 > 用户 + 群里的几条「鱼」（DSH 会话）在同一个框里说话。
 
 设计与早期决策见开发工作区的 `群插件-方案.md`（不随包发布）。
 这个仓库是**代码**。
 
----
+## 安装
+
+已发布到 npm：`dsh-fishchat`（MIT）。
+
+在 DSH 里：
+
+```
+plugin_manager install_bundle  target: "dsh-fishchat"
+```
+
+或者直接：
+
+```sh
+pnpm add dsh-fishchat
+```
+
+装完在 DSH 插件页启用 `dsh-fishchat`。数据写在 `$DSH_HOME/storages/rooms.json`（默认 `~/.dsh/storages/`），卸载插件不会删它。
+
+## 这个插件在 DSH 生态里的位置
+
+- **npm 包**：[dsh-fishchat](https://www.npmjs.com/package/dsh-fishchat)（无 scope，可直接安装）
+- **发布方式**：`npm publish`（staged publishing，首次发布需在 npm 的 Staged Packages 页面批准）
+- **npm keywords**：`dsh-plugin`、`dsh-bundle`、`deepseek-harness`、`group-chat`、`rooms`
+- **GitHub topics**：`dsh-plugin`、`deepseek-harness`、`dsh`
+- **社区目录**：待收录到 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（提交 `data/plugins/7ygys__dsh-fishchat.yml` 一个 PR）
+- **市场索引**：收录后可通过 `dsh-plugin-catalog` 的索引在市场里搜到
 
 ## 目录
 
 ```
 群插件\
-├─ CLEANUP.md          ← 往仓库外写的东西的总账（开发用，不发布）
-├─ EXPERIMENTS.md      ← 实测记录（开发用，不发布）
-├─ package.json        ← 插件清单
+├─ package.json        ← 插件清单（npm 发布配置）
 ├─ cordis.patch.yml    ← 把自己插进插件树
 ├─ index.js            ← 主机端：数据、投递、唤醒、搬运、HTTP、工具
 ├─ client.js           ← 浏览器端：侧栏一行 + 主区域聊天流
@@ -22,24 +49,11 @@
 ├─ docs\               ← 插件详情页（DETAIL.md + preview.svg）
 ├─ locale\             ← meta.title / meta.description / meta.detail
 ├─ LICENSE             ← MIT
-├─ fix-link.cmd        ← 重建 profile 里的 junction（开发用，不发布）
+├─ CLEANUP.md          ← 开发用，不发布
+├─ EXPERIMENTS.md      ← 开发用，不发布
+├─ fix-link.cmd        ← 本地 link 修复脚本，开发用，不发布
 └─ .probe\             ← 一次性探针（gitignore）
 ```
-
-## 安装
-
-装进 DSH 的 profile 即可，两个来源：
-
-- **npm**（发布后）：
-  ```
-  plugin_manager install_bundle  target: "dsh-fishchat"
-  ```
-- **GitHub**：
-  ```
-  plugin_manager install_bundle  target: "git+https://github.com/7ygys/dsh-fishchat.git"
-  ```
-
-装完在 DSH 插件页启用 `dsh-fishchat`。数据写在 `$DSH_HOME/storages/rooms.json`（默认 `~/.dsh/storages/`），卸载插件不会删它。
 
 ## 状态
 
@@ -53,6 +67,7 @@
 - [x] 界面增强：头像、背景、主题、字号、笔记侧栏
 - [x] 可靠性：wakeLog 账本、每群 earliestSeq、投递窗口按群、删除墓碑、inflight 恢复
 - [x] 图标：DSH 鲸鱼阴阳构图（插件图标 + 侧栏同一张图）
+- [x] 发布 npm `dsh-fishchat@1.0.0`
 
 ## 当前约束
 
@@ -62,7 +77,7 @@
 
 ## 起手
 
-```powershell
+```sh
 git log --oneline
 ```
 
